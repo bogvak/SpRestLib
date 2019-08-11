@@ -2,7 +2,7 @@
  * NAME: qunit-test.js
  * DESC: tests for qunit-test.html (coded against my personal O365 Dev Site - YMMV)
  * AUTH: https://github.com/gitbrent/
- * DATE: 20180628
+ * DATE: 20190212
  *
  * HOWTO: Generate text tables for README etc.:
  * sprLib.list('Employees').items(['Id', 'Name', 'Badge_x0020_Number']).then(function(arrData){ console.log(getAsciiTableStr(arrData)) });
@@ -18,14 +18,18 @@ const RESTDEMO2 = '/sites/dev/sandbox/';
 const SITEURL1  = '/sites/dev/sandbox/child1';
 const SITEURL2  = 'sandbox/child1';
 const SITEURL3  = '/sites/dev/sandbox/';
+const FOLDPERMUNQ = '/sites/dev/Shared Documents/BreakPerms';
 //
+const TEST_GROUP_NAME = 'QUNIT TEST GROUP';
 const ARR_NAMES_FIRST = ['Jack','Mark','CutiePie','Steve','Barry','Clark','Diana','Star','Luke','Captain'];
 const ARR_NAMES_LAST  = ['Septiceye','Iplier','Martzia','Rodgers','Allen','Kent','Prince','Lord','Skywalker','Marvel'];
 //
 const LIST_GUID2 = '23846527-218a-43a2-b5c1-7b55b6feb1a3';
 //
 const gRegexGUID = /^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+var gTestGroupId = 8;
 var gTestUserId = 9;
+var gObjCurrUser = {};
 
 function getAsciiTableStr(inResult) {
 	var arrResults = [];
@@ -63,25 +67,8 @@ function getAsciiTableStr(inResult) {
 }
 
 // ================================================================================================
-QUnit.module( "Library OPTIONS" );
-// ================================================================================================
-{
-	QUnit.test(`sprLib.baseUrl('${RESTROOT}')`, function(assert){
-		// TEST:
-		// A: Set
-		sprLib.baseUrl(RESTROOT);
-		// B: Get
-		var strBaseUrl = sprLib.baseUrl();
-		// C: Test
-		assert.ok( strBaseUrl == RESTROOT, "Pass: `strBaseUrl == RESTROOT` Str: " + strBaseUrl );
-		//
-	});
-}
 
-// ================================================================================================
-QUnit.module( "LIST > COLS and INFO Methods" );
-// ================================================================================================
-{
+QUnit.module( "LIST - COLS and INFO Methods", function(){
 	// TEST: Using GUID
 	['Departments', 'Employees', 'Empty', '8fda2798-dbbc-497d-9840-df87b08e09c1']
 	.forEach(function(list,idx){
@@ -191,12 +178,9 @@ QUnit.module( "LIST > COLS and INFO Methods" );
 			done();
 		});
 	});
-}
+});
 
-// ================================================================================================
-QUnit.module( "LIST > BASEURL Methods" );
-// ================================================================================================
-{
+QUnit.module( "LIST - BASEURL Methods", function(){
 	QUnit.test(`sprLib.list() 'baseUrl' parsing VS!`, function(assert){
 		var done = assert.async();
 		Promise.all([
@@ -213,12 +197,9 @@ QUnit.module( "LIST > BASEURL Methods" );
 			done();
 		})
 	});
-}
+});
 
-// ================================================================================================
-QUnit.module( "LIST > ITEM CRUD Methods" );
-// ================================================================================================
-{
+QUnit.module( "LIST - ITEM CRUD Methods", function(){
 	QUnit.test("sprLib.list().create()", function(assert){
 		[1,2,3,4].forEach(function(done,idx){
 			done = assert.async();
@@ -530,12 +511,9 @@ QUnit.module( "LIST > ITEM CRUD Methods" );
 			done();
 		});
 	});
-}
+});
 
-// ================================================================================================
-QUnit.module( "LIST > ITEM GET Methods" );
-// ================================================================================================
-{
+QUnit.module( "LIST - ITEM GET Methods", function(){
 	QUnit.test("sprLib.items() 01: no opts", function(assert){
 		var done = assert.async();
 		// TEST:
@@ -709,7 +687,7 @@ QUnit.module( "LIST > ITEM GET Methods" );
 		sprLib.list('Employees')
 		.items({
 			listCols: {
-				empName:  { dataName:'Name'          },
+				empName:  { dataName:'Name' },
 				mgrTitle: { dataName:'Manager/Title' },
 				depsArr:  { dataName:'Departments_x0020_Supported/Id' }
 			},
@@ -717,6 +695,7 @@ QUnit.module( "LIST > ITEM GET Methods" );
 			queryFilter: "Departments_x0020_Supported ne null"
 		})
 		.then(function(arrayResults){
+			console.log(arrayResults);
 			assert.ok( Object.keys(arrayResults[0]).filter(key=>{return key.indexOf('_')!=0}).length == 3, "arrayResults[0] (no '__meta/__next') has length == 3: "+ Object.keys(arrayResults[0]).length );
 			assert.ok( !isNaN(arrayResults[0].depsArr[0].Id), "arrayResults[0].depsArr[0].Id is a number: "+ arrayResults[0].depsArr[0].Id );
 			assert.ok( getAsciiTableStr(arrayResults), `RESULTS:\n${getAsciiTableStr(arrayResults)}`);
@@ -1201,28 +1180,69 @@ QUnit.module( "LIST > ITEM GET Methods" );
 			});
 		});
 	});
-}
+});
 
 // ================================================================================================
-QUnit.module( "QA: Result Parsing" );
-// ================================================================================================
-{
-	QUnit.test("sprLib.rest() ex: 'Parsing Lookups: Lookup with 2 sub items (ex: 'Member.ID' and 'Member.Title') - plain cols", function(assert){
+
+QUnit.module( "FILE - Methods", function(){
+	// NOTE: `get` - test can be executed via `sprestlib-demo.html` (or `nodejs-demo.js`)
+
+	// `info()`
+	QUnit.test("sprLib.file('SiteAssets/whatever').info()", function(assert){
 		var done = assert.async();
-		// TEST:
-		sprLib.rest({
-			url: '_api/web/roleAssignments',
-			queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden']
+		sprLib.folder('SiteAssets').files()
+		.then(arrFiles => {
+			sprLib.file( arrFiles[0].ServerRelativeUrl ).info()
+			.then(function(objInfo){
+				assert.ok( Object.keys(objInfo).length > 0, "Object.keys(objInfo).length > 0: "+ Object.keys(objInfo).length );
+				assert.ok( getAsciiTableStr([objInfo]) , `RESULTS:\n${getAsciiTableStr([objInfo])}`);
+				done();
+			})
+			.catch(function(errorMessage){
+				assert.ok( (false), errorMessage );
+				done();
+			});
+		});
+	});
+
+	// `perms()`
+	QUnit.test("sprLib.file('SiteAssets/whatever').perms()", function(assert){
+		var done = assert.async();
+		sprLib.folder('SiteAssets').files()
+		.then(arrFiles => {
+			sprLib.file( arrFiles[0].ServerRelativeUrl ).perms()
+			.then(function(arrayResults){
+				assert.ok( arrayResults[0].hasOwnProperty('Member'), "arrayResults[0].hasOwnProperty('Member')"+ arrayResults[0].hasOwnProperty('Member') );
+				assert.ok( arrayResults[0].hasOwnProperty('Roles') , "arrayResults[0].hasOwnProperty('Roles')" + arrayResults[0].hasOwnProperty('Roles') );
+				assert.ok( Array.isArray(arrayResults[0].Roles)    , "Array.isArray(arrayResults[0].Roles)"    + Array.isArray(arrayResults[0].Roles) );
+				assert.ok( getAsciiTableStr(arrayResults)          , `RESULTS:\n${getAsciiTableStr(arrayResults)}`);
+				done();
+			})
+			.catch(function(errorMessage){
+				assert.ok( (false), errorMessage );
+				done();
+			});
+		});
+	});
+
+	// `delete()`
+	QUnit.test("sprLib.file('/sites/dev/Shared Documents/deleteable/whatever').delete()", function(assert){
+		var done = assert.async();
+		// PREP:
+		var objFile = {};
+		sprLib.folder('/sites/dev/Shared Documents/deleteable').files()
+		.then(function(arrResults){
+			if ( !arrResults || arrResults.length == 0 ) throw 'NO_FILES_FOUND';
+			objFile = arrResults.sort((a,b) => { return new Date(a.Modified) > new Date(b.Modified) ? true : false })[0];
+			assert.ok( (true), "FYI: objFile: "+JSON.stringify(objFile,null,4) );
 		})
-		.then(function(arrayResults){
-			var objRow = arrayResults[0];
-			assert.ok( Object.keys(objRow).length == 3, "objRow has length == 3: "+ Object.keys(objRow).length );
-			assert.ok( (objRow.Member.PrincipalType && objRow.Member.Title), "objRow.Member.PrincipalType/Title both exist: "+ objRow.Member.PrincipalType+' / '+objRow.Member.Title );
-			assert.ok( (typeof objRow.Member === 'object' && !Array.isArray(objRow.Member)), "objRow.Member is object (and !array): "+ typeof objRow.Member === 'object' );
-			assert.ok( (Array.isArray(objRow.RoleDefinitionBindings)), "objRow.RoleDef is an array: "+ Array.isArray(objRow.RoleDefinitionBindings) );
-			assert.ok( (objRow.RoleDefinitionBindings[0].Name && objRow.RoleDefinitionBindings[0].Hidden !== 'undefined'), "objRow.RoleDef[0].Name/Hidden both exist: "+ objRow.RoleDefinitionBindings[0].Name+' / '+objRow.RoleDefinitionBindings[0].Hidden );
-			assert.ok( getAsciiTableStr(arrayResults), `RESULTS:\n${getAsciiTableStr(arrayResults)}` );
-			done();
+		.then(function(){
+			// TEST:
+			sprLib.file(objFile.ServerRelativeUrl).delete()
+			.then(function(boolResult){
+				assert.ok( boolResult, "`boolResult`: "+boolResult.toString() );
+				done();
+			});
 		})
 		.catch(function(err){
 			assert.ok( (false), err );
@@ -1230,39 +1250,203 @@ QUnit.module( "QA: Result Parsing" );
 		});
 	});
 
-	QUnit.test("sprLib.rest() ex: 'Parsing Lookups: Lookup with 2 sub items (ex: 'Member.ID' and 'Member.Title') - col objects", function(assert){
+	// `recycle()`
+	QUnit.test("sprLib.file('/sites/dev/Shared Documents/deleteable/whatever').recycle()", function(assert){
 		var done = assert.async();
-		// TEST:
-		sprLib.rest({
-			url: '_api/web/roleAssignments',
-			queryCols: {
-				PrincipalId:	{ dataName:'PrincipalId' },
-				PrincipalType:	{ dataName:'Member/PrincipalType' },
-				Title:			{ dataName:'Member/Title' },
-				RoleNames:		{ dataName:'RoleDefinitionBindings/Name' }
-			}
+		// PREP:
+		var objFile = {};
+		sprLib.folder('/sites/dev/Shared Documents/deleteable').files()
+		.then(function(arrResults){
+			// NOTE: use `<=1` and `[1]` below, otherwise, the same file will be chosen for both delete/recycle!!!
+			if ( !arrResults || arrResults.length <= 1 ) throw 'NO_FILES_FOUND';
+			objFile = arrResults.sort((a,b) => { return new Date(a.Modified) > new Date(b.Modified) ? true : false })[1];
+			assert.ok( (true), "FYI: objFile: "+JSON.stringify(objFile,null,4) );
 		})
-		.then(function(arrayResults){
-			var objRow = arrayResults[0];
-			assert.ok( Object.keys(objRow).length == 4, "objRow has length == 4: "+ Object.keys(objRow).length );
-			assert.ok( (objRow.PrincipalId && objRow.PrincipalType && objRow.Title && objRow.RoleNames), "All cols exist: "+ Object.keys(arrayResults[0]).toString() );
-			assert.ok( (typeof objRow.PrincipalType === 'number'), "typeof objRow.PrincipalType === 'number': "+ typeof objRow.PrincipalType );
-			assert.ok( (Array.isArray(objRow.RoleNames)), "Array.isArray(objRow.RoleNames): "+ Array.isArray(objRow.RoleNames) );
-			assert.ok( (objRow.RoleNames[0].Name), "objRow.RoleNames[0].Name exists: "+ objRow.RoleNames[0].Name );
-			assert.ok( getAsciiTableStr(arrayResults), `RESULTS:\n${getAsciiTableStr(arrayResults)}` );
-			done();
+		.then(function(){
+			// TEST:
+			sprLib.file(objFile.ServerRelativeUrl).recycle()
+			.then(function(boolResult){
+				assert.ok( boolResult, "`boolResult`: "+boolResult.toString() );
+				done();
+			});
 		})
 		.catch(function(err){
 			assert.ok( (false), err );
 			done();
 		});
 	});
-}
+});
+
+QUnit.module( "FOLDER - Methods", function(){
+	// INFO: PROPS/PERMS
+	QUnit.test("sprLib.folder('"+BASEURL+"/SiteAssets').info() - using full URL", function(assert){
+		var done = assert.async();
+		sprLib.folder(BASEURL+'/SiteAssets').info()
+		.then(function(objInfo){
+			assert.ok( Object.keys(objInfo).length > 0, "Object.keys(objInfo).length > 0: "+ Object.keys(objInfo).length );
+			assert.ok( getAsciiTableStr([objInfo]) , `RESULTS:\n${getAsciiTableStr([objInfo])}`);
+			done();
+		})
+		.catch(function(errorMessage){
+			assert.ok( (false), errorMessage );
+			done();
+		});
+	});
+
+	QUnit.test("sprLib.folder('SiteAssets').info() - using only folder name", function(assert){
+		var done = assert.async();
+		sprLib.folder('SiteAssets').info()
+		.then(function(objInfo){
+			assert.ok( Object.keys(objInfo).length > 0, "Object.keys(objInfo).length > 0: "+ Object.keys(objInfo).length );
+			assert.ok( getAsciiTableStr([objInfo]) , `RESULTS:\n${getAsciiTableStr([objInfo])}`);
+			done();
+		})
+		.catch(function(errorMessage){
+			assert.ok( (false), errorMessage );
+			done();
+		});
+	});
+
+	QUnit.test("sprLib.folder('SiteAssets').perms()", function(assert){
+		var done = assert.async();
+		sprLib.folder('SiteAssets').perms()
+		.then(function(arrayResults){
+			assert.ok( arrayResults[0].hasOwnProperty('Member'), "arrayResults[0].hasOwnProperty('Member')"+ arrayResults[0].hasOwnProperty('Member') );
+			assert.ok( arrayResults[0].hasOwnProperty('Roles') , "arrayResults[0].hasOwnProperty('Roles')" + arrayResults[0].hasOwnProperty('Roles') );
+			assert.ok( Array.isArray(arrayResults[0].Roles)    , "Array.isArray(arrayResults[0].Roles)"    + Array.isArray(arrayResults[0].Roles) );
+			assert.ok( getAsciiTableStr(arrayResults)          , `RESULTS:\n${getAsciiTableStr(arrayResults)}`);
+			done();
+		})
+		.catch(function(errorMessage){
+			assert.ok( (false), errorMessage );
+			done();
+		});
+	});
+
+	QUnit.test("sprLib.folder('"+FOLDPERMUNQ+"').perms() - Unique Perms", function(assert){
+		var done = assert.async();
+		sprLib.folder(FOLDPERMUNQ).perms()
+		.then(function(arrayResults){
+			assert.ok( arrayResults[0].hasOwnProperty('Member'), "arrayResults[0].hasOwnProperty('Member')"+ arrayResults[0].hasOwnProperty('Member') );
+			assert.ok( arrayResults[0].hasOwnProperty('Roles') , "arrayResults[0].hasOwnProperty('Roles')" + arrayResults[0].hasOwnProperty('Roles') );
+			assert.ok( arrayResults.length == 2                , "arrayResults.length == 2 (perms are broken, and contain only 2 groups): " + arrayResults.length );
+			assert.ok( getAsciiTableStr(arrayResults)          , `RESULTS:\n${getAsciiTableStr(arrayResults)}`);
+			done();
+		})
+		.catch(function(errorMessage){
+			assert.ok( (false), errorMessage );
+			done();
+		});
+	});
+
+	// CONTENTS: FILES/FOLDERS
+	QUnit.test("sprLib.folder('SiteAssets').files()", function(assert){
+		var done = assert.async();
+		sprLib.folder('SiteAssets').files()
+		.then(arrayResults => {
+			assert.ok( Array.isArray(arrayResults)              , "Array.isArray(arrayResults)               => "+ Array.isArray(arrayResults) );
+			assert.ok( arrayResults[0].hasOwnProperty('Name')   , "arrayResults[0].hasOwnProperty('Name')    => "+ arrayResults[0].hasOwnProperty('Name') );
+			assert.ok( arrayResults[0].hasOwnProperty('Created'), "arrayResults[0].hasOwnProperty('Created') => "+ arrayResults[0].hasOwnProperty('Created') );
+			assert.ok( getAsciiTableStr(arrayResults)           , `RESULTS:\n${getAsciiTableStr(arrayResults)}`);
+			done();
+		})
+		.catch(function(errorMessage){
+			assert.ok( (false), errorMessage );
+			done();
+		});
+	});
+
+	QUnit.test("sprLib.folder('SiteAssets').folders()", function(assert){
+		var done = assert.async();
+		sprLib.folder('SiteAssets').folders()
+		.then(arrayResults => {
+			assert.ok( Array.isArray(arrayResults)              , "Array.isArray(arrayResults)               => "+ Array.isArray(arrayResults) );
+			assert.ok( arrayResults[0].hasOwnProperty('Name')   , "arrayResults[0].hasOwnProperty('Name')    => "+ arrayResults[0].hasOwnProperty('Name') );
+			assert.ok( arrayResults[0].hasOwnProperty('Created'), "arrayResults[0].hasOwnProperty('Created') => "+ arrayResults[0].hasOwnProperty('Created') );
+			assert.ok( getAsciiTableStr(arrayResults)           , `RESULTS:\n${getAsciiTableStr(arrayResults)}`);
+			done();
+		})
+		.catch(function(errorMessage){
+			assert.ok( (false), errorMessage );
+			done();
+		});
+	});
+
+	// MANIPULATION: Add, Delete, Recycle
+	// `add()`
+	QUnit.test("sprLib.folder('Shared Documents/deleteable').add('newFolder')", function(assert){
+		var done = assert.async();
+		var strNewFolder = 'AddFolder-'+new Date().toISOString().replace(/[-:.]/gi,'');
+		sprLib.folder('Shared Documents/deleteable').add(strNewFolder)
+		.then(objFolder => {
+			sprLib.folder( objFolder.ServerRelativeUrl ).info()
+			.then(function(objInfo){
+				assert.ok( Object.keys(objInfo).length > 0, "Object.keys(objInfo).length > 0: "+ Object.keys(objInfo).length );
+				assert.ok( objInfo.Name == strNewFolder, "(objInfo.Name == strNewFolder) ? "+ (objInfo.Name == strNewFolder ? 'TRUE' : 'FALSE!!!') );
+				assert.ok( getAsciiTableStr([objInfo]) , `RESULTS:\n${getAsciiTableStr([objInfo])}`);
+				done();
+			})
+			.catch(function(errorMessage){
+				assert.ok( (false), errorMessage );
+				done();
+			});
+		});
+	});
+
+	// `delete()`
+	QUnit.test("sprLib.folder('folderToDelete').delete()", function(assert){
+		var done = assert.async();
+		// PREP:
+		var objFile = {};
+		sprLib.folder('/sites/dev/Shared Documents/deleteable').folders()
+		.then(function(arrResults){
+			if ( !arrResults || arrResults.length == 0 ) throw 'NO_FOLDERS_FOUND';
+			objFile = arrResults.sort((a,b) => { return new Date(a.Modified) > new Date(b.Modified) ? true : false })[0];
+			assert.ok( (true), "FYI: objFolder: "+JSON.stringify(objFile,null,4) );
+		})
+		.then(function(){
+			// TEST:
+			sprLib.folder(objFile.ServerRelativeUrl).delete()
+			.then(function(boolResult){
+				assert.ok( boolResult, "`boolResult`: "+boolResult.toString() );
+				done();
+			});
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
+		});
+	});
+
+	// `recycle()`
+	QUnit.test("sprLib.folder('folderToDelete').recycle()", function(assert){
+		var done = assert.async();
+		// PREP:
+		var objFile = {};
+		sprLib.folder('/sites/dev/Shared Documents/deleteable').folders()
+		.then(function(arrResults){
+			if ( !arrResults || arrResults.length == 0 ) throw 'NO_FOLDERS_FOUND';
+			objFile = arrResults.sort((a,b) => { return new Date(a.Modified) > new Date(b.Modified) ? true : false })[0];
+			assert.ok( (true), "FYI: objFolder: "+JSON.stringify(objFile,null,4) );
+		})
+		.then(function(){
+			// TEST:
+			sprLib.folder(objFile.ServerRelativeUrl).recycle()
+			.then(function(boolResult){
+				assert.ok( boolResult, "`boolResult`: "+boolResult.toString() );
+				done();
+			});
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
+		});
+	});
+});
 
 // ================================================================================================
-QUnit.module( "REST Methods" );
-// ================================================================================================
-{
+
+QUnit.module( "REST - Methods", function(){
 	QUnit.test("sprLib.rest() ex: '_api/lists/getbytitle('Employees')/items' [1:relative-url, 2:get]", function(assert){
 		var done = assert.async();
 		// TEST:
@@ -1436,232 +1620,233 @@ QUnit.module( "REST Methods" );
 		});
 	});
 	*/
-}
+});
 
 // ================================================================================================
-QUnit.module( "REST > Parsing/Options Tests" );
-// ================================================================================================
-{
-	// NOTE: Parameterized QUnit Tests (!)
-	var arrObjTests = [
-		{ testDesc:"url:relative", urlPath:  "_api/lists/getbytitle('Site Assets')/items" },
-		{ testDesc:"url:absolute", urlPath: "/_api/lists/getbytitle('Site Assets')/items" },
-		{ testDesc:"url:relative", urlPath:  "_api/lists/getbytitle('Site Assets')/items?$select=ID" },
-		{ testDesc:"url:absolute", urlPath: "/_api/lists/getbytitle('Site Assets')/items?$select=ID" },
-		{ testDesc:"url:RESTROOT", urlPath: RESTROOT+"/_api/lists/getbytitle('Site Assets')/items?$select=ID" },
-		{ testDesc:"url:BASEURL+RESTROOT", urlPath: BASEURL+"/_api/lists/getbytitle('Site Assets')/items?$select=ID" },
-		{
-			testDesc: "query: queryCols",
-			urlPath:  "_api/lists/getbytitle('Site Assets')/items",
-			qryCols:  "ID",
-			arrTests: [
-				function(arrResults){ return arrResults.length > 0 },
-				function(arrResults){ return Object.keys(arrResults[0]).length == 1 },
-				function(arrResults){ return arrResults[0].ID }
-			]
-		},
-		{
-			testDesc: "query: queryCols + queryFilter",
-			urlPath: "_api/lists/getbytitle('Site Assets')/items",
-			qryCols: ['ID'],
-			qryFilter: "ID eq 10",
-			arrTests: [
-				function(arrResults){ return arrResults.length > 0 },
-				function(arrResults){ return Object.keys(arrResults[0]).length == 1 },
-				function(arrResults){ return arrResults[0].ID == 10 }
-			]
-		},
-		{
-			testDesc: "query: queryFilter + qryLimit",
-			urlPath: "_api/lists/getbytitle('Site Assets')/items",
-			qryFilter: "ID gt 10",
-			qryLimit: "5",
-			arrTests: [
-				function(arrResults){ return arrResults.length == 5 },
-				function(arrResults){ return arrResults[0].ID > 10 }
-			]
-		},
-		{
-			testDesc: "query: queryFilter",
-			urlPath: "_api/lists/getbytitle('Site Assets')/items",
-			qryFilter: "ID eq 10",
-			arrTests: [
-				function(arrResults){ return arrResults.length > 0 },
-				function(arrResults){ return arrResults[0].ID == 10 }
-			]
-		},
-		{
-			testDesc: "query: mixed $select and queryFilter",
-			urlPath: "_api/lists/getbytitle('Site Assets')/items?$select=ID",
-			qryFilter: "ID eq 10",
-			arrTests: [
-				function(arrResults){ return arrResults.length > 0 },
-				function(arrResults){ return arrResults[0].ID == 10 }
-			]
-		}
 
-		/*
-		{
-			testDesc : ""
-			urlPath  : RESTROOT+"/_api/lists/getbytitle('Site Assets')/items",
-			urlSelect: "",
-			qryCols  : null,
-			qryFilter: "",
-			qryLimit : ""
-		}
-		*/
-	];
+QUnit.module( "SITE - Methods", function(){
+	var arrTestUrls = [ null, SITEURL1, SITEURL2 ];
 
-	QUnit.test("sprLib.rest() -> Battery of Parsing Tests (Total: "+arrObjTests.length+")", function(assert){
-		arrObjTests.forEach((objTest,idx)=>{
-			// A:
-			var done = assert.async();
-
-			// B: Set query object
-			var objRest = {};
-			if ( objTest.urlPath   ) objRest.url =  objTest.urlPath;
-			if ( objTest.urlSelect ) objRest.url += objTest.urlSelect;
-			if ( objTest.qryCols   ) objRest.queryCols   = objTest.qryCols;
-			if ( objTest.qryFilter ) objRest.queryFilter = objTest.qryFilter;
-			if ( objTest.qryLimit  ) objRest.queryLimit  = objTest.qryLimit;
-			if ( !objTest.arrTests ) objTest.arrTests = [function(arrResults){ return arrResults.length > 0 }];
-
-			// C: Execute test
-			sprLib.rest(objRest)
-			.then(function(arrResults){
-				objTest.arrTests.forEach((funcTest,idy) => assert.ok( funcTest(arrResults), (objTest.testDesc || "TEST "+idx)+" #"+idy+":\n"+funcTest.toString() ));
-				assert.ok(true, `RESULTS:\n${getAsciiTableStr(arrResults)}\n************************************************************\n`);
-				done();
-			})
-			.catch(function(err){
-				assert.ok( (false), err );
-				done();
-			});
-		});
-	});
-}
-
-// ================================================================================================
-QUnit.module( "requestDigest Tests" );
-// ================================================================================================
-{
-	var _digest = "";
-	var _testId = "";
-
-	QUnit.test("requestDigest Test 1: Test `requestDigest`", function(assert){
-		// A:
+	// DESC: group()
+	QUnit.test("sprLib.site().group().info()", function(assert){
 		var done = assert.async();
 
-		// B: Test
-		Promise.all([
-			sprLib.rest({ url:'_api/contextinfo', type:'POST' }),
-			sprLib.list('Employees').items({ listCols:'Id', queryLimit:'1' })
-		])
-		.then(function(arrAllArrays){
-			_digest = arrAllArrays[0][0].GetContextWebInformation.FormDigestValue;
-			_testId = arrAllArrays[1][0].Id;
+		sprLib.site().group({ id:gTestGroupId }).info()
+		.then(function(objGroup){
+			assert.ok( Object.keys(objGroup).length >= 12, "Object.keys(objGroup).length >= 12: "+ Object.keys(objGroup).length );
+			assert.ok( (objGroup.Id),    "objGroup.Id    exists: '"+ objGroup.Id    +"'");
+			assert.ok( (objGroup.Title), "objGroup.Title exists: '"+ objGroup.Title +"'");
+			assert.ok( getAsciiTableStr(objGroup), `RESULTS:\n${getAsciiTableStr([objGroup])}` );
 
-			assert.ok( _digest, "_digest: "+ _digest );
-			assert.ok( _digest != $('#__REQUESTDIGEST').val(), "_digest != $('#__REQUESTDIGEST').val(): "+ $('#__REQUESTDIGEST').val() );
-
-			sprLib.list({ name:'Employees', requestDigest:_digest }).update({ ID:_testId, Title:'FDV Test' })
-			.then(function(objData){
-				assert.ok( objData.Id && objData.Title, "objData.Id && objData.Title: "+ objData.Id +'/'+ objData.Title );
-				assert.ok(true, `RESULTS:\n${getAsciiTableStr(objData)}\n************************************************************\n`);
-				done();
-			});
+			// DONE
+			done();
 		})
 		.catch(function(err){
 			assert.ok( (false), err );
 			done();
 		});
 	});
-}
 
-// ================================================================================================
-QUnit.module( "SITE Methods" );
-// ================================================================================================
-{
-	var arrTestUrls = [ null, SITEURL1, SITEURL2 ];
+	// DESC: group()
+	QUnit.test("sprLib.site().group().create() and `delete()`", function(assert){
+		var done = assert.async();
 
-	// DESC: info()
-	QUnit.test("sprLib.site().info() - using `arrTestUrls`", function(assert){
-		arrTestUrls.forEach((ARG_SITE,idx)=>{
-			var done = assert.async();
-			// TEST:
-			sprLib.site(ARG_SITE).info()
-			.then(function(objSite){
-				assert.ok( Object.keys(objSite).length == 15, "Object.keys(objSite).length == 15: "+ Object.keys(objSite).length );
-				assert.ok( (objSite.Id),    "objSite.Id    exists: '"+ objSite.Id    +"'");
-				assert.ok( (objSite.Title), "objSite.Title exists: '"+ objSite.Title +"'");
-				assert.ok( objSite.AssociatedOwnerGroup.Id && objSite.AssociatedOwnerGroup.Title && objSite.AssociatedOwnerGroup.OwnerTitle, "objSite.AssociatedOwnerGroup has 3 props: "+ JSON.stringify(objSite.AssociatedOwnerGroup) );
-				assert.ok( objSite.AssociatedMemberGroup.Id && objSite.AssociatedMemberGroup.Title && objSite.AssociatedMemberGroup.OwnerTitle, "objSite.AssociatedMemberGroup has 3 props: "+ JSON.stringify(objSite.AssociatedMemberGroup) );
-				assert.ok( objSite.AssociatedVisitorGroup.Id && objSite.AssociatedVisitorGroup.Title && objSite.AssociatedVisitorGroup.OwnerTitle, "objSite.AssociatedVisitorGroup has 3 props: "+ JSON.stringify(objSite.AssociatedVisitorGroup) );
-				assert.ok( objSite.Owner.LoginName && objSite.Owner.Title && objSite.Owner.Email && objSite.Owner.IsSiteAdmin, "objSite.Owner has 4 props: "+ JSON.stringify(objSite.Owner,' ',4) );
-				assert.ok( getAsciiTableStr(objSite), `RESULTS:\n${getAsciiTableStr(objSite)}` );
-				assert.ok( true, `\n************************************************************\n`);
-				done();
-			})
-			.catch(function(err){
-				assert.ok( (false), err );
-				done();
-			});
+		// CREATE GROUP
+		sprLib.site().groups()
+		.then((arrCurrGroups)=>{
+			var arrCheck = arrCurrGroups.filter((grp)=>{ return grp.Title == TEST_GROUP_NAME });
+
+			// FIRST: Remove test group if left over found
+			if ( arrCheck && arrCheck.length > 0 ) {
+				assert.ok( true, `NOTE: Test group found at start of test - removing it now\n`);
+				return sprLib.site().group({ id:arrCheck[0].Id }).delete();
+			}
+		})
+		.then((cleanUpDone)=>{
+			return sprLib.site().groups();
+		})
+		.then((arrCurrGroups)=>{
+			var arrCheck = arrCurrGroups.filter((grp)=>{ return grp.Title == TEST_GROUP_NAME });
+
+			assert.ok( !arrCheck || arrCheck.length == 0, "TEST_GROUP_NAME does not exist yet: "+arrCheck.length );
+
+			return sprLib.site().group().create(
+				{ 'Title':TEST_GROUP_NAME, 'Description':'qunit test for '+ new Date().toLocaleDateString() }
+			);
+		})
+		.then(function(newGroupCreated){
+			return sprLib.site().groups();
+		})
+		.then(function(arrCurrGroups){
+			var arrCheck = arrCurrGroups.filter((grp)=>{ return grp.Title == TEST_GROUP_NAME });
+			//
+			assert.ok( arrCheck && arrCheck.length == 1, "TEST_GROUP_NAME exists. arrCheck = "+arrCheck.join(',') );
+			assert.ok( getAsciiTableStr(arrCheck), `RESULTS:\n${getAsciiTableStr(arrCheck)}` );
+			//
+			assert.ok( true, `\nEND TEST CREATE: ************************************************************\n`);
+
+			return sprLib.site().group({ id:arrCheck[0].Id }).delete();
+		})
+		.then(function(newGroupDeleted){
+			return sprLib.site().groups();
+		})
+		.then(function(arrCurrGroups){
+			var arrCheck = arrCurrGroups.filter((grp)=>{ return grp.Title == TEST_GROUP_NAME });
+			//
+			assert.ok( !arrCheck || arrCheck.length == 0, "arrCheck: TEST_GROUP_NAME deleted! arrCheck.length="+arrCheck.length );
+			//
+			assert.ok( true, `\nEND TEST DELETE: ************************************************************\n`);
+			done();
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
 		});
 	});
 
-	// DESC: lists()
-	QUnit.test("sprLib.site().lists() - using both `()` and `(SITEURL1)`", function(assert){
-		arrTestUrls.forEach((ARG_SITE,idx)=>{
-			var done = assert.async();
-			// TEST:
-			sprLib.site(ARG_SITE).lists()
-			.then(function(arrResults){
-				var objItem = arrResults[0];
-				//
-				assert.ok( Object.keys(objItem).length == 10, "Object.keys(objItem).length == 10: "+ Object.keys(objItem).length );
-				assert.ok( (objItem.Title != null),     "objItem.Title exists..........: '"+ objItem.Title +"'");
-				assert.ok( (objItem.Id    != null),     "objItem.Id    exists..........: '"+ objItem.Id    +"'");
-				assert.ok( gRegexGUID.test(objItem.Id), "gRegexGUID.test(objItem.Id)...: '"+ objItem.Id    +"'");
-				assert.ok( !isNaN(objItem.ItemCount),   "objItem.ItemCount is a Number.: "+ objItem.ItemCount +"");
-				assert.ok( (objItem.ImageUrl          && objItem.ImageUrl.indexOf('/') == 0),          "objItem.ImageUrl          starts with '/': '"+ objItem.ImageUrl +"'");
-				assert.ok( (objItem.ParentWebUrl      && objItem.ParentWebUrl.indexOf('/') == 0),      "objItem.ParentWebUrl      starts with '/': '"+ objItem.ParentWebUrl +"'");
-				assert.ok( (objItem.ServerRelativeUrl && objItem.ServerRelativeUrl.indexOf('/') == 0), "objItem.ServerRelativeUrl starts with '/': '"+ objItem.ServerRelativeUrl +"'");
-				assert.ok( getAsciiTableStr(objItem), `RESULTS:\n${getAsciiTableStr(objItem)}` );
-				assert.ok( getAsciiTableStr(arrResults), `RESULTS:\n${getAsciiTableStr(arrResults)}` );
-				//
-				assert.ok( true, `\n************************************************************\n`);
-				done();
-			})
-			.catch(function(err){
-				assert.ok( (false), err );
-				done();
-			});
+	// DESC: group().addUser()
+	QUnit.test("sprLib.site().group(TEST_GROUP_NAME).addUser() - using `id` and `login`", function(assert){
+		var done = assert.async();
+		var grpId = -1;
+
+		// CREATE GROUP
+		Promise.all([
+			sprLib.user().info(),
+			sprLib.site().groups(),
+		])
+		.then((arrResults)=>{
+			gObjCurrUser = arrResults[0];
+			var arrCurrGroups = arrResults[1];
+			var arrCheck = arrCurrGroups.filter((grp)=>{ return grp.Title == TEST_GROUP_NAME })[0];
+
+			// FIRST: Remove test group if left over found
+			if ( !arrCheck ) {
+				assert.ok( true, `NOTE: Test group not found at start of test - creating it now\n`);
+				return sprLib.site().group().create(
+					{ 'Title':TEST_GROUP_NAME, 'Description':'qunit test for '+ new Date().toLocaleDateString() }
+				);
+			}
+		})
+		.then(function(){
+			return sprLib.site().groups({ title:TEST_GROUP_NAME });
+		})
+		.then(function(arrGroups){
+			grpId = arrGroups[0].Id
+			// NOTE: This wont fail - if the users doesnt exist, its fine
+			return sprLib.site().group({ id:grpId }).removeUser({ login:gObjCurrUser.LoginName });
+		})
+		.then(function(){
+			return sprLib.site().groups({ title:TEST_GROUP_NAME });
+		})
+		.then(function(arrGroups){
+			assert.ok( arrGroups && arrGroups.length == 1, "arrGroups[0].Title = "+ arrGroups[0].Title );
+			assert.ok( arrGroups && arrGroups[0].Users.length == 0, "arrGroups[0].Users.length == 0 -> "+ arrGroups[0].Users.length );
+			assert.ok( getAsciiTableStr(arrGroups), `RESULTS:\n${getAsciiTableStr(arrGroups)}` );
+
+			// TEST: Add new user to Group
+			return sprLib.site().group({ id:grpId }).addUser({ id:gObjCurrUser.Id });
+		})
+		.then(function(objGrpUser){
+			assert.ok( objGrpUser && objGrpUser.id == gObjCurrUser.Id, "objGrpUser.id == gObjCurrUser.Id -> "+ objGrpUser.id +" == "+ gObjCurrUser.Id );
+			assert.ok( getAsciiTableStr(objGrpUser), `RESULTS:\n${getAsciiTableStr(objGrpUser)}` );
+			assert.ok( true, `\nEND TEST "id": ************************************************************\n`);
+
+			// Clean-up
+			return sprLib.site().group({ id:grpId }).removeUser({ login:gObjCurrUser.LoginName });
+		})
+		.then(function(){
+			// TEST: Add new user to Group
+			return sprLib.site().group({ id:grpId }).addUser({ login:gObjCurrUser.LoginName });
+		})
+		.then(function(objGrpUser){
+			assert.ok( objGrpUser && objGrpUser.id == gObjCurrUser.Id, "objGrpUser.id == gObjCurrUser.Id -> "+ objGrpUser.id +" == "+ gObjCurrUser.Id );
+			assert.ok( getAsciiTableStr(objGrpUser), `RESULTS:\n${getAsciiTableStr(objGrpUser)}` );
+			assert.ok( true, `\nEND TEST "login": ************************************************************\n`);
+		})
+		.then(function(DONE){
+			done();
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
 		});
 	});
 
-	// DESC: perms()
-	QUnit.test("sprLib.site().perms() - using both `()` and `(SITEURL1)`", function(assert){
-		arrTestUrls.forEach((ARG_SITE,idx)=>{
-			var done = assert.async();
-			// TEST:
-			sprLib.site(ARG_SITE).perms()
-			.then(function(arrResults){
-				var objItem = arrResults[0];
-				//
-				assert.ok( Object.keys(objItem).length == 2, "Object.keys(objItem).length == 2: "+ Object.keys(objItem).length );
-				assert.ok( objItem.Member, "objItem.Member exists: '"+ JSON.stringify(objItem.Member) +"'");
-				assert.ok( objItem.Member.PrincipalId && objItem.Member.PrincipalType && objItem.Member.Title, "objItem.Member has 3 props: "+ JSON.stringify(objItem.Member) );
-				assert.ok( objItem.Roles && Array.isArray(objItem.Roles), "objItem.Roles exists and is an array: '"+ JSON.stringify(objItem.Roles) +"'");
-				assert.ok( Object.keys(objItem.Roles[0]).length == 2, "Object.keys(objItem.Roles[0]).length == 2: "+ JSON.stringify(objItem.Roles[0]) );
-				assert.ok( getAsciiTableStr(objItem), `RESULTS:\n${getAsciiTableStr(objItem)}` );
-				//
-				assert.ok( true, `\n************************************************************\n`);
-				done();
-			})
-			.catch(function(err){
-				assert.ok( (false), err );
-				done();
-			});
+	// DESC: group().removeUser()
+	QUnit.test("sprLib.site().group(TEST_GROUP_NAME).removeUser() - using `id` and `login`", function(assert){
+		var done = assert.async();
+		var grpId = -1;
+
+		// CREATE GROUP
+		Promise.all([
+			sprLib.user().info(),
+			sprLib.site().groups(),
+		])
+		.then((arrResults)=>{
+			gObjCurrUser = arrResults[0];
+			var arrCurrGroups = arrResults[1];
+			var arrCheck = arrCurrGroups.filter((grp)=>{ return grp.Title == TEST_GROUP_NAME })[0];
+
+			// FIRST: Remove test group if left over found
+			if ( !arrCheck ) {
+				assert.ok( true, `NOTE: Test group not found at start of test - creating it now\n`);
+				return sprLib.site().group().create(
+					{ 'Title':TEST_GROUP_NAME, 'Description':'qunit test for '+ new Date().toLocaleDateString() }
+				);
+			}
+		})
+		.then(function(){
+			return sprLib.site().groups({ title:TEST_GROUP_NAME });
+		})
+		.then(function(arrGroups){
+			grpId = arrGroups[0].Id
+			// NOTE: This wont fail
+			return sprLib.site().group({ id:grpId }).addUser({ login:gObjCurrUser.LoginName });
+		})
+		.then(function(){
+			return sprLib.site().groups({ title:TEST_GROUP_NAME });
+		})
+		.then(function(arrGroups){
+			assert.ok( arrGroups && arrGroups.length == 1, "arrGroups[0].Title = "+ arrGroups[0].Title );
+			assert.ok( arrGroups && arrGroups[0].Users.length == 1, "arrGroups[0].Users.length == 1 -> "+ arrGroups[0].Users.length );
+			assert.ok( getAsciiTableStr(arrGroups), `RESULTS:\n${getAsciiTableStr(arrGroups)}` );
+
+			// TEST: Remove user to Group
+			return sprLib.site().group({ id:grpId }).removeUser({ id:gObjCurrUser.Id });
+		})
+		.then(function(boolResult){
+			assert.ok( boolResult, "boolResult -> "+ boolResult );
+
+			return sprLib.site().groups({ title:TEST_GROUP_NAME });
+		})
+		.then(function(arrGroups){
+			assert.ok( arrGroups && arrGroups[0].Users.length == 0, "arrGroups[0].Users.length == 0 -> "+ arrGroups[0].Users.length );
+			assert.ok( getAsciiTableStr(arrGroups), `RESULTS:\n${getAsciiTableStr(arrGroups)}` );
+			assert.ok( true, `\nEND TEST "id": ************************************************************\n`);
+
+			// Clean-up
+			return sprLib.site().group({ id:grpId }).addUser({ login:gObjCurrUser.LoginName });
+		})
+		.then(function(){
+			// TEST: Remove user to Group
+			return sprLib.site().group({ id:grpId }).removeUser({ login:gObjCurrUser.LoginName });
+		})
+		.then(function(boolResult){
+			assert.ok( boolResult, "boolResult -> "+ boolResult );
+
+			return sprLib.site().groups({ title:TEST_GROUP_NAME });
+		})
+		.then(function(arrGroups){
+			assert.ok( arrGroups && arrGroups[0].Users.length == 0, "arrGroups[0].Users.length == 0 -> "+ arrGroups[0].Users.length );
+			assert.ok( getAsciiTableStr(arrGroups), `RESULTS:\n${getAsciiTableStr(arrGroups)}` );
+			assert.ok( true, `\nEND TEST "login": ************************************************************\n`);
+		})
+		.then(function(DONE){
+			done();
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
 		});
 	});
 
@@ -1738,6 +1923,87 @@ QUnit.module( "SITE Methods" );
 				assert.ok( getAsciiTableStr(arrGroups), `RESULTS:\n${getAsciiTableStr(arrGroups)}` );
 				//
 				assert.ok( true, `\nEND TEST 4: ************************************************************\n`);
+				done();
+			})
+			.catch(function(err){
+				assert.ok( (false), err );
+				done();
+			});
+		});
+	});
+
+	// DESC: info()
+	QUnit.test("sprLib.site().info() - using `arrTestUrls`", function(assert){
+		arrTestUrls.forEach((ARG_SITE,idx)=>{
+			var done = assert.async();
+			// TEST:
+			sprLib.site(ARG_SITE).info()
+			.then(function(objSite){
+				assert.ok( Object.keys(objSite).length == 15, "Object.keys(objSite).length == 15: "+ Object.keys(objSite).length );
+				assert.ok( (objSite.Id),    "objSite.Id    exists: '"+ objSite.Id    +"'");
+				assert.ok( (objSite.Title), "objSite.Title exists: '"+ objSite.Title +"'");
+				assert.ok( objSite.AssociatedOwnerGroup.Id && objSite.AssociatedOwnerGroup.Title && objSite.AssociatedOwnerGroup.OwnerTitle, "objSite.AssociatedOwnerGroup has 3 props: "+ JSON.stringify(objSite.AssociatedOwnerGroup) );
+				assert.ok( objSite.AssociatedMemberGroup.Id && objSite.AssociatedMemberGroup.Title && objSite.AssociatedMemberGroup.OwnerTitle, "objSite.AssociatedMemberGroup has 3 props: "+ JSON.stringify(objSite.AssociatedMemberGroup) );
+				assert.ok( objSite.AssociatedVisitorGroup.Id && objSite.AssociatedVisitorGroup.Title && objSite.AssociatedVisitorGroup.OwnerTitle, "objSite.AssociatedVisitorGroup has 3 props: "+ JSON.stringify(objSite.AssociatedVisitorGroup) );
+				assert.ok( objSite.Owner.LoginName && objSite.Owner.Title && objSite.Owner.Email && objSite.Owner.IsSiteAdmin, "objSite.Owner has 4 props: "+ JSON.stringify(objSite.Owner,' ',4) );
+				assert.ok( getAsciiTableStr(objSite), `RESULTS:\n${getAsciiTableStr(objSite)}` );
+				assert.ok( true, `\n************************************************************\n`);
+				done();
+			})
+			.catch(function(err){
+				assert.ok( (false), err );
+				done();
+			});
+		});
+	});
+
+	// DESC: lists()
+	QUnit.test("sprLib.site().lists() - using both `()` and `(SITEURL1)`", function(assert){
+		arrTestUrls.forEach((ARG_SITE,idx)=>{
+			var done = assert.async();
+			// TEST:
+			sprLib.site(ARG_SITE).lists()
+			.then(function(arrResults){
+				var objItem = arrResults[0];
+				//
+				assert.ok( Object.keys(objItem).length == 10, "Object.keys(objItem).length == 10: "+ Object.keys(objItem).length );
+				assert.ok( (objItem.Title != null),     "objItem.Title exists..........: '"+ objItem.Title +"'");
+				assert.ok( (objItem.Id    != null),     "objItem.Id    exists..........: '"+ objItem.Id    +"'");
+				assert.ok( gRegexGUID.test(objItem.Id), "gRegexGUID.test(objItem.Id)...: '"+ objItem.Id    +"'");
+				assert.ok( !isNaN(objItem.ItemCount),   "objItem.ItemCount is a Number.: "+ objItem.ItemCount +"");
+				assert.ok( (objItem.ImageUrl          && objItem.ImageUrl.indexOf('/') == 0),          "objItem.ImageUrl          starts with '/': '"+ objItem.ImageUrl +"'");
+				assert.ok( (objItem.ParentWebUrl      && objItem.ParentWebUrl.indexOf('/') == 0),      "objItem.ParentWebUrl      starts with '/': '"+ objItem.ParentWebUrl +"'");
+				assert.ok( (objItem.ServerRelativeUrl && objItem.ServerRelativeUrl.indexOf('/') == 0), "objItem.ServerRelativeUrl starts with '/': '"+ objItem.ServerRelativeUrl +"'");
+				assert.ok( getAsciiTableStr(objItem), `RESULTS:\n${getAsciiTableStr(objItem)}` );
+				assert.ok( getAsciiTableStr(arrResults), `RESULTS:\n${getAsciiTableStr(arrResults)}` );
+				//
+				assert.ok( true, `\n************************************************************\n`);
+				done();
+			})
+			.catch(function(err){
+				assert.ok( (false), err );
+				done();
+			});
+		});
+	});
+
+	// DESC: perms()
+	QUnit.test("sprLib.site().perms() - using both `()` and `(SITEURL1)`", function(assert){
+		arrTestUrls.forEach((ARG_SITE,idx)=>{
+			var done = assert.async();
+			// TEST:
+			sprLib.site(ARG_SITE).perms()
+			.then(function(arrResults){
+				var objItem = arrResults[0];
+				//
+				assert.ok( Object.keys(objItem).length == 2, "Object.keys(objItem).length == 2: "+ Object.keys(objItem).length );
+				assert.ok( objItem.Member, "objItem.Member exists: '"+ JSON.stringify(objItem.Member) +"'");
+				assert.ok( objItem.Member.PrincipalId && objItem.Member.PrincipalType && objItem.Member.Title, "objItem.Member has 3 props: "+ JSON.stringify(objItem.Member) );
+				assert.ok( objItem.Roles && Array.isArray(objItem.Roles), "objItem.Roles exists and is an array: '"+ JSON.stringify(objItem.Roles) +"'");
+				assert.ok( Object.keys(objItem.Roles[0]).length == 2, "Object.keys(objItem.Roles[0]).length == 2: "+ JSON.stringify(objItem.Roles[0]) );
+				assert.ok( getAsciiTableStr(objItem), `RESULTS:\n${getAsciiTableStr(objItem)}` );
+				//
+				assert.ok( true, `\n************************************************************\n`);
 				done();
 			})
 			.catch(function(err){
@@ -1921,110 +2187,210 @@ QUnit.module( "SITE Methods" );
 			});
 		});
 	});
-}
+});
 
 // ================================================================================================
-QUnit.module( "USER Methods" );
-// ================================================================================================
-{
-	var gObjCurrUser = {};
 
-	sprLib.user().info()
-	.then(function(objUser){ gObjCurrUser = objUser })
-	.then(function(){
-		[ {id:gObjCurrUser.Id}, {email:gObjCurrUser.Email}, {login:gObjCurrUser.LoginName}, {title:gObjCurrUser.Title} ]
-		.forEach(function(param,idx){
-			QUnit.test('sprLib.user('+ JSON.stringify(param) +').info()', function(assert){
-				var done = assert.async();
-				// TEST:
-				sprLib.user(param).info()
-				.then(function(objUser){
-					assert.ok( objUser.Id		,"Pass: Id....... - " + objUser.Id );
-					assert.ok( objUser.Title	,"Pass: Title.... - " + objUser.Title );
-					assert.ok( objUser.Email	,"Pass: Email.... - " + objUser.Email );
-					assert.ok( objUser.LoginName,"Pass: LoginName - " + objUser.LoginName );
-					done();
-				});
-			});
+QUnit.module( "USER - Methods", function(){
 
-			QUnit.test('sprLib.user('+ JSON.stringify(param) +').groups()', function(assert){
-				var done = assert.async();
-				// TEST:
-				sprLib.user(param).groups()
-				.then(function(arrGroups){
-					assert.ok( arrGroups.length > 0, "arrGroups is an Array, and length > 0: "+ arrGroups.length );
-					//
-					let table = new AsciiTable();
-					if (arrGroups.length > 0) table.setHeading( Object.keys(arrGroups[0]) );
-					$.each(arrGroups,function(idx,obj){ let vals = []; $.each(obj, function(key,val){ vals.push(val) }); table.addRow(vals); });
-					assert.ok( table.toString(), `RESULTS:\n${table.toString()}`);
-					//
-					done();
-				});
-			});
+	[ {id:gObjCurrUser.Id}, {email:gObjCurrUser.Email}, {login:gObjCurrUser.LoginName}, {title:gObjCurrUser.Title} ]
+	.forEach(function(param){
+		QUnit.test("sprLib.user() => groups(), info(), profile()", function(assert){
+			var done = assert.async();
 
-			QUnit.test('sprLib.user('+ JSON.stringify(param) +').profile()', function(assert){
-				var done = assert.async();
-				// TEST:
-				Promise.all([
+			sprLib.user().info()
+			.then(objUser => {
+				gObjCurrUser = objUser;
+
+				return sprLib.user(param).info();
+			})
+			.then(objUser => {
+				assert.ok( objUser.Id		,"Pass: Id....... - " + objUser.Id );
+				assert.ok( objUser.Title	,"Pass: Title.... - " + objUser.Title );
+				assert.ok( objUser.Email	,"Pass: Email.... - " + objUser.Email );
+				assert.ok( objUser.LoginName,"Pass: LoginName - " + objUser.LoginName );
+
+				return sprLib.user(param).groups();
+			})
+			.then(function(arrGroups){
+				assert.ok( arrGroups.length > 0, "arrGroups is an Array, and length > 0: "+ arrGroups.length );
+				//
+				let table = new AsciiTable();
+				if (arrGroups.length > 0) table.setHeading( Object.keys(arrGroups[0]) );
+				$.each(arrGroups,function(idx,obj){ let vals = []; $.each(obj, function(key,val){ vals.push(val) }); table.addRow(vals); });
+				assert.ok( table.toString(), `RESULTS:\n${table.toString()}`);
+
+				return Promise.all([
 					sprLib.user(param).profile(),
-					sprLib.user(param).profile('Email')
+					sprLib.user(param).profile('PersonalSpace'),
+					sprLib.user(param).profile(['FirstName','PersonalSpace']),
 				])
-				.then(function(arrArrays){
-					var prof1 = arrArrays[0];
-					var prof2 = arrArrays[1];
-					assert.ok( prof1.hasOwnProperty('Email'), "Pass: prof1.hasOwnProperty('Email'): " + prof1.hasOwnProperty('Email') );
-					assert.ok( Object.keys(prof1).length > 0, "Pass: Object.keys(prof1).length > 0: "+ Object.keys(prof1).length );
-					assert.ok( prof2.Email == gObjCurrUser.Email, "prof2.Email == gObjCurrUser.Email ? "+ `${prof2.Email} == ${gObjCurrUser.Email}` );
-					assert.ok( getAsciiTableStr(prof1), `RESULTS:\n${getAsciiTableStr(prof1)}` );
-					assert.ok( getAsciiTableStr(prof2), `RESULTS:\n${getAsciiTableStr(prof2)}` );
-					done();
-				});
+			})
+			.then(function(arrArrays){
+				var prof1 = arrArrays[0];
+				var prof2 = arrArrays[1];
+				var prof3 = arrArrays[2];
+
+				// CASE 1: Full result set: all properties/UserProfile object
+				assert.ok( true, "CASE 1: --------------------------------------------------------------------" );
+				assert.ok( prof1.hasOwnProperty('ExtendedReports'), "Pass: prof1.hasOwnProperty('ExtendedReports'): " + prof1.hasOwnProperty('ExtendedReports') );
+				assert.ok( prof1.UserProfileProperties.hasOwnProperty('PersonalSpace'), "Pass: prof1.UserProfileProperties.hasOwnProperty('PersonalSpace'): " + prof1.UserProfileProperties.hasOwnProperty('PersonalSpace') );
+				assert.ok( Object.keys(prof1).length > 0, "Pass: Object.keys(prof1).length > 0: "+ Object.keys(prof1).length );
+				assert.ok( Object.keys(prof1.UserProfileProperties).length > 0, "Pass: Object.keys(prof1.UserProfileProperties).length > 0: "+ Object.keys(prof1.UserProfileProperties).length );
+				assert.ok( getAsciiTableStr(prof1), `RESULTS:\n${getAsciiTableStr(prof1)}` );
+
+				// CASE 2: Single UserProfile property
+				/*
+				.-----------------------------------------------------------.
+				|   Prop Name   |                Prop Value                 |
+				|---------------|-------------------------------------------|
+				| PersonalSpace | /personal/admin_somedude_onmicrosoft_com/ |
+				'-----------------------------------------------------------'
+				*/
+				assert.ok( true, "CASE 2: --------------------------------------------------------------------" );
+				assert.ok( prof2.PersonalSpace, "`prof2.PersonalSpace` ? "+ `${prof2.PersonalSpace}` );
+				assert.ok( !prof2.UserProfileProperties, "`!prof2.UserProfileProperties` ? "+ `${!prof2.UserProfileProperties}` );
+				assert.ok( Object.keys(prof2).length == 1, "Pass: Object.keys(prof2).length == 1: "+ Object.keys(prof2).length );
+				assert.ok( getAsciiTableStr(prof2), `RESULTS:\n${getAsciiTableStr(prof2)}` );
+
+				// CASE 3: Multiple properties
+				/*
+				.-----------------------------------------------------------.
+				|   Prop Name   |                Prop Value                 |
+				|---------------|-------------------------------------------|
+				| FirstName     | Brent                                     |
+				| PersonalSpace | /personal/admin_somedude_onmicrosoft_com/ |
+				'-----------------------------------------------------------'
+				*/
+				assert.ok( true, "CASE 3: --------------------------------------------------------------------" );
+				assert.ok( prof3.FirstName, "`prof3.FirstName` ? "+ `${prof3.FirstName}` );
+				assert.ok( prof3.PersonalSpace, "`prof3.PersonalSpace` ? "+ `${prof3.PersonalSpace}` );
+				assert.ok( Object.keys(prof3).length == 2, "Pass: Object.keys(prof3).length == 2: "+ Object.keys(prof3).length );
+				assert.ok( getAsciiTableStr(prof3), `RESULTS:\n${getAsciiTableStr(prof3)}` );
+
+				// DONE!
+				done();
+			})
+			.catch(function(err){
+				assert.ok( (false), err );
+				done();
 			});
 		});
+	});
 
-		// TODO: separate test for `[ '', {} ]` as those will return current user
+	// PROFILE TEST: Current User
+	QUnit.test('sprLib.user().profile()', function(assert){
+		var done = assert.async();
+		// TEST:
+		Promise.all([
+			sprLib.user().profile(),
+			sprLib.user().profile('PersonalSpace'),
+			sprLib.user().profile(['FirstName','PersonalSpace']),
+		])
+		.then(function(arrArrays){
+			var prof1 = arrArrays[0];
+			var prof2 = arrArrays[1];
+			var prof3 = arrArrays[2];
 
-		[ {id:999}, {email:'junk@email.com'}, {login:'totally not a real login'}, {title:'totally not a real name'} ]
-		.forEach(function(param,idx){
-			QUnit.test('sprLib.user('+ JSON.stringify(param) +').info()', function(assert){
-				var done = assert.async();
-				// TEST:
-				sprLib.user(param).info()
-				.then(function(objUser){
-					assert.ok( typeof objUser === 'object', "Pass: objUser is object type: " + typeof objUser );
-					assert.ok( Object.keys(objUser).length == 0, "Pass: `keys(objUser).length == 0` -> " + Object.keys(objUser).length );
-					done();
-				});
-			});
+			// CASE 1: Full result set: all properties/UserProfile object
+			assert.ok( true, "CASE 1: --------------------------------------------------------------------" );
+			assert.ok( prof1.hasOwnProperty('ExtendedReports'), "Pass: prof1.hasOwnProperty('ExtendedReports'): " + prof1.hasOwnProperty('ExtendedReports') );
+			assert.ok( prof1.UserProfileProperties.hasOwnProperty('PersonalSpace'), "Pass: prof1.UserProfileProperties.hasOwnProperty('PersonalSpace'): " + prof1.UserProfileProperties.hasOwnProperty('PersonalSpace') );
+			assert.ok( Object.keys(prof1).length > 0, "Pass: Object.keys(prof1).length > 0: "+ Object.keys(prof1).length );
+			assert.ok( Object.keys(prof1.UserProfileProperties).length > 0, "Pass: Object.keys(prof1.UserProfileProperties).length > 0: "+ Object.keys(prof1.UserProfileProperties).length );
+			assert.ok( getAsciiTableStr(prof1), `RESULTS:\n${getAsciiTableStr(prof1)}` );
 
-			QUnit.test('sprLib.user('+ JSON.stringify(param) +').groups()', function(assert){
-				var done = assert.async();
-				// TEST:
-				sprLib.user(param).groups()
-				.then(function(arrGroups){
-					assert.ok( Array.isArray(arrGroups), "Pass: Array.isArray(arrGroups): " + Array.isArray(arrGroups) );
-					assert.ok( arrGroups.length == 0, "Pass: `arrGroups.length == 0` -> "+ arrGroups.length );
-					done();
-				});
-			});
+			// CASE 2: Single UserProfile property
+			/*
+			.-----------------------------------------------------------.
+			|   Prop Name   |                Prop Value                 |
+			|---------------|-------------------------------------------|
+			| PersonalSpace | /personal/admin_somedude_onmicrosoft_com/ |
+			'-----------------------------------------------------------'
+			*/
+			assert.ok( true, "CASE 2: --------------------------------------------------------------------" );
+			assert.ok( prof2.PersonalSpace, "`prof2.PersonalSpace` ? "+ `${prof2.PersonalSpace}` );
+			assert.ok(
+				prof2.PersonalSpace.toLowerCase().indexOf('property does not exist') == -1,
+				"`prof2.PersonalSpace` exists? "+ `${prof2.PersonalSpace.toLowerCase().indexOf('property does not exist')}`
+			);
+			assert.ok( !prof2.UserProfileProperties, "`!prof2.UserProfileProperties` ? "+ `${!prof2.UserProfileProperties}` );
+			assert.ok( Object.keys(prof2).length == 1, "Pass: Object.keys(prof2).length == 1: "+ Object.keys(prof2).length );
+			assert.ok( getAsciiTableStr(prof2), `RESULTS:\n${getAsciiTableStr(prof2)}` );
 
-			QUnit.test('sprLib.user('+ JSON.stringify(param) +').profile()', function(assert){
-				var done = assert.async();
-				// TEST:
-				Promise.all([
+			// CASE 3: Multiple properties
+			/*
+			.-----------------------------------------------------------.
+			|   Prop Name   |                Prop Value                 |
+			|---------------|-------------------------------------------|
+			| FirstName     | Brent                                     |
+			| PersonalSpace | /personal/admin_somedude_onmicrosoft_com/ |
+			'-----------------------------------------------------------'
+			*/
+			assert.ok( true, "CASE 3: --------------------------------------------------------------------" );
+			assert.ok( prof3.FirstName, "`prof3.FirstName` ? "+ `${prof3.FirstName}` );
+			assert.ok(
+				prof3.FirstName.toLowerCase().indexOf('property does not exist') == -1,
+				"`prof3.FirstName` exists? "+ `${prof3.FirstName.toLowerCase().indexOf('property does not exist')}`
+			);
+			assert.ok( prof3.PersonalSpace, "`prof3.PersonalSpace` ? "+ `${prof3.PersonalSpace}` );
+			assert.ok(
+				prof3.PersonalSpace.toLowerCase().indexOf('property does not exist') == -1,
+				"`prof3.PersonalSpace` exists? "+ `${prof3.PersonalSpace.toLowerCase().indexOf('property does not exist')}`
+			);
+			assert.ok( Object.keys(prof3).length == 2, "Pass: Object.keys(prof3).length == 2: "+ Object.keys(prof3).length );
+			assert.ok( getAsciiTableStr(prof3), `RESULTS:\n${getAsciiTableStr(prof3)}` );
+
+			// DONE!
+			done();
+		})
+		.catch(function(strErr){
+			assert.ok( typeof strErr === 'string', `(typeof strErr === 'string') => ${typeof strErr}` );
+			assert.ok( strErr, `catch strErr: ${strErr}` );
+			done();
+		});
+	});
+
+	[ {id:999}, {email:'junk@email.com'}, {login:'totally not a real login'}, {title:'totally not a real name'} ]
+	.forEach(function(param){
+		QUnit.test("sprLib.user() [JUNK TEST] => groups(), info(), profile()", function(assert){
+			var done = assert.async();
+
+			sprLib.user(param).info()
+			.then(objUser => {
+				assert.ok( typeof objUser === 'object', "Pass: objUser is object type: " + typeof objUser );
+				assert.ok( Object.keys(objUser).length == 0, "Pass: `keys(objUser).length == 0` -> " + Object.keys(objUser).length );
+
+				return sprLib.user(param).groups();
+			})
+			.then(function(arrGroups){
+				assert.ok( Array.isArray(arrGroups), "Pass: Array.isArray(arrGroups): " + Array.isArray(arrGroups) );
+				assert.ok( arrGroups.length == 0, "Pass: `arrGroups.length == 0` -> "+ arrGroups.length );
+
+				return Promise.all([
 					sprLib.user(param).profile(),
-					sprLib.user(param).profile('Email')
+					sprLib.user(param).profile('PersonalSpace'),
+					sprLib.user(param).profile(['FirstName','PersonalSpace']),
 				])
-				.then(function(arrArrays){
-					var prof1 = arrArrays[0];
-					var prof2 = arrArrays[1];
-					assert.ok( prof1 && Object.keys(prof1).length == 0, "Object.keys(prof1).length == 0: " + Object.keys(prof1).length );
-					assert.ok( prof2 && Object.keys(prof2).length == 0, "Object.keys(prof2).length == 0: " + Object.keys(prof2).length );
-					assert.ok( !prof1.Email , "prof1.Email doesnt exist: "+ prof1.Email );
-					assert.ok( !prof2.Email , "prof2.Email doesnt exist: "+ prof2.Email );
-					done();
-				});
+			})
+			.then(function(arrArrays){
+				var prof1 = arrArrays[0];
+				var prof2 = arrArrays[1];
+				var prof3 = arrArrays[2];
+				assert.ok( prof1 && Object.keys(prof1).length == 0, "Object.keys(prof1).length == 0: " + Object.keys(prof1).length );
+				assert.ok( prof2 && Object.keys(prof2).length == 0, "Object.keys(prof2).length == 0: " + Object.keys(prof2).length );
+				assert.ok( prof3 && Object.keys(prof3).length == 0, "Object.keys(prof3).length == 0: " + Object.keys(prof3).length );
+				assert.ok( !prof1.FirstName , "prof1.FirstName doesnt exist: "+ prof1.FirstName );
+				assert.ok( !prof2.FirstName , "prof2.FirstName doesnt exist: "+ prof2.FirstName );
+				assert.ok( !prof3.FirstName , "prof3.FirstName doesnt exist: "+ prof3.FirstName );
+
+				// DONE!
+				done();
+			})
+			.catch(function(strErr){
+				assert.ok( typeof strErr === 'string', `(typeof strErr === 'string') => ${typeof strErr}` );
+				assert.ok( strErr, `catch strErr: ${strErr}` );
+				done();
 			});
 		});
 	});
@@ -2045,7 +2411,222 @@ QUnit.module( "USER Methods" );
 			console.log( strErr );
 		});
 	});
-}
+});
+
+//
+// MISC:
+//
+
+QUnit.module( "QA -- REST API test urlPath", function(){
+	// NOTE: Parameterized QUnit Tests (!)
+	var arrObjTests = [
+		{ testDesc:"url:relative", urlPath:  "_api/lists/getbytitle('Site Assets')/items" },
+		{ testDesc:"url:absolute", urlPath: "/_api/lists/getbytitle('Site Assets')/items" },
+		{ testDesc:"url:relative", urlPath:  "_api/lists/getbytitle('Site Assets')/items?$select=ID" },
+		{ testDesc:"url:absolute", urlPath: "/_api/lists/getbytitle('Site Assets')/items?$select=ID" },
+		{ testDesc:"url:RESTROOT", urlPath: RESTROOT+"/_api/lists/getbytitle('Site Assets')/items?$select=ID" },
+		{ testDesc:"url:BASEURL+RESTROOT", urlPath: BASEURL+"/_api/lists/getbytitle('Site Assets')/items?$select=ID" },
+		{
+			testDesc: "query: queryCols",
+			urlPath:  "_api/lists/getbytitle('Site Assets')/items",
+			qryCols:  "ID",
+			arrTests: [
+				function(arrResults){ return arrResults.length > 0 },
+				function(arrResults){ return Object.keys(arrResults[0]).length == 1 },
+				function(arrResults){ return arrResults[0].ID }
+			]
+		},
+		{
+			testDesc: "query: queryCols + queryFilter",
+			urlPath: "_api/lists/getbytitle('Site Assets')/items",
+			qryCols: ['ID'],
+			qryFilter: "ID eq 10",
+			arrTests: [
+				function(arrResults){ return arrResults.length > 0 },
+				function(arrResults){ return Object.keys(arrResults[0]).length == 1 },
+				function(arrResults){ return arrResults[0].ID == 10 }
+			]
+		},
+		{
+			testDesc: "query: queryFilter + qryLimit",
+			urlPath: "_api/lists/getbytitle('Site Assets')/items",
+			qryFilter: "ID gt 10",
+			qryLimit: "5",
+			arrTests: [
+				function(arrResults){ return arrResults.length == 5 },
+				function(arrResults){ return arrResults[0].ID > 10 }
+			]
+		},
+		{
+			testDesc: "query: queryFilter",
+			urlPath: "_api/lists/getbytitle('Site Assets')/items",
+			qryFilter: "ID eq 10",
+			arrTests: [
+				function(arrResults){ return arrResults.length > 0 },
+				function(arrResults){ return arrResults[0].ID == 10 }
+			]
+		},
+		{
+			testDesc: "query: mixed $select and queryFilter",
+			urlPath: "_api/lists/getbytitle('Site Assets')/items?$select=ID",
+			qryFilter: "ID eq 10",
+			arrTests: [
+				function(arrResults){ return arrResults.length > 0 },
+				function(arrResults){ return arrResults[0].ID == 10 }
+			]
+		}
+
+		/*
+		{
+			testDesc : ""
+			urlPath  : RESTROOT+"/_api/lists/getbytitle('Site Assets')/items",
+			urlSelect: "",
+			qryCols  : null,
+			qryFilter: "",
+			qryLimit : ""
+		}
+		*/
+	];
+
+	QUnit.test("sprLib.rest() -> Battery of Parsing Tests (Total: "+arrObjTests.length+")", function(assert){
+		arrObjTests.forEach((objTest,idx)=>{
+			// A:
+			var done = assert.async();
+
+			// B: Set query object
+			var objRest = {};
+			if ( objTest.urlPath   ) objRest.url =  objTest.urlPath;
+			if ( objTest.urlSelect ) objRest.url += objTest.urlSelect;
+			if ( objTest.qryCols   ) objRest.queryCols   = objTest.qryCols;
+			if ( objTest.qryFilter ) objRest.queryFilter = objTest.qryFilter;
+			if ( objTest.qryLimit  ) objRest.queryLimit  = objTest.qryLimit;
+			if ( !objTest.arrTests ) objTest.arrTests = [function(arrResults){ return arrResults.length > 0 }];
+
+			// C: Execute test
+			sprLib.rest(objRest)
+			.then(function(arrResults){
+				objTest.arrTests.forEach((funcTest,idy) => assert.ok( funcTest(arrResults), (objTest.testDesc || "TEST "+idx)+" #"+idy+":\n"+funcTest.toString() ));
+				assert.ok(true, `RESULTS:\n${getAsciiTableStr(arrResults)}\n************************************************************\n`);
+				done();
+			})
+			.catch(function(err){
+				assert.ok( (false), err );
+				done();
+			});
+		});
+	});
+});
+
+QUnit.module( "QA -- Result Parsing", function(){
+	QUnit.test("sprLib.rest() ex: 'Parsing Lookups: Lookup with 2 sub items (ex: 'Member.ID' and 'Member.Title') - plain cols", function(assert){
+		var done = assert.async();
+		// TEST:
+		sprLib.rest({
+			url: '_api/web/roleAssignments',
+			queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden']
+		})
+		.then(function(arrayResults){
+			var objRow = arrayResults[0];
+			assert.ok( Object.keys(objRow).length == 3, "objRow has length == 3: "+ Object.keys(objRow).length );
+			assert.ok( (objRow.Member.PrincipalType && objRow.Member.Title), "objRow.Member.PrincipalType/Title both exist: "+ objRow.Member.PrincipalType+' / '+objRow.Member.Title );
+			assert.ok( (typeof objRow.Member === 'object' && !Array.isArray(objRow.Member)), "objRow.Member is object (and !array): "+ typeof objRow.Member === 'object' );
+			assert.ok( (Array.isArray(objRow.RoleDefinitionBindings)), "objRow.RoleDef is an array: "+ Array.isArray(objRow.RoleDefinitionBindings) );
+			assert.ok( (objRow.RoleDefinitionBindings[0].Name && objRow.RoleDefinitionBindings[0].Hidden !== 'undefined'), "objRow.RoleDef[0].Name/Hidden both exist: "+ objRow.RoleDefinitionBindings[0].Name+' / '+objRow.RoleDefinitionBindings[0].Hidden );
+			assert.ok( getAsciiTableStr(arrayResults), `RESULTS:\n${getAsciiTableStr(arrayResults)}` );
+			done();
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
+		});
+	});
+
+	QUnit.test("sprLib.rest() ex: 'Parsing Lookups: Lookup with 2 sub items (ex: 'Member.ID' and 'Member.Title') - col objects", function(assert){
+		var done = assert.async();
+		// TEST:
+		sprLib.rest({
+			url: '_api/web/roleAssignments',
+			queryCols: {
+				PrincipalId:	{ dataName:'PrincipalId' },
+				PrincipalType:	{ dataName:'Member/PrincipalType' },
+				Title:			{ dataName:'Member/Title' },
+				RoleNames:		{ dataName:'RoleDefinitionBindings/Name' }
+			}
+		})
+		.then(function(arrayResults){
+			var objRow = arrayResults[0];
+			assert.ok( Object.keys(objRow).length == 4, "objRow has length == 4: "+ Object.keys(objRow).length );
+			assert.ok( (objRow.PrincipalId && objRow.PrincipalType && objRow.Title && objRow.RoleNames), "All cols exist: "+ Object.keys(arrayResults[0]).toString() );
+			assert.ok( (typeof objRow.PrincipalType === 'number'), "typeof objRow.PrincipalType === 'number': "+ typeof objRow.PrincipalType );
+			assert.ok( (Array.isArray(objRow.RoleNames)), "Array.isArray(objRow.RoleNames): "+ Array.isArray(objRow.RoleNames) );
+			assert.ok( (objRow.RoleNames[0].Name), "objRow.RoleNames[0].Name exists: "+ objRow.RoleNames[0].Name );
+			assert.ok( getAsciiTableStr(arrayResults), `RESULTS:\n${getAsciiTableStr(arrayResults)}` );
+			done();
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
+		});
+	});
+});
+
+QUnit.module( "MISC -- Library Options", function(){
+	QUnit.test(`sprLib.options({ baseUrl:'${RESTROOT}' })`, function(assert){
+		// A: Set
+		sprLib.options({ baseUrl:RESTROOT });
+		// B: Get
+		var objOpts = sprLib.options();
+		var strBaseUrl = objOpts.baseUrl;
+		// C: Test
+		assert.ok( strBaseUrl == RESTROOT, "Pass: `sprLib.options().baseUrl == RESTROOT` Str: " + strBaseUrl );
+		assert.ok( getAsciiTableStr([objOpts]), `RESULTS:\n${getAsciiTableStr([objOpts])}` );
+	});
+
+	// DEPRECATED (w/b removed in 2.0)
+	QUnit.test(`sprLib.baseUrl('${RESTROOT}') **DEPRECATED**`, function(assert){
+		// TEST:
+		// A: Set
+		sprLib.baseUrl(RESTROOT);
+		// B: Get
+		var strBaseUrl = sprLib.baseUrl();
+		// C: Test
+		assert.ok( strBaseUrl == RESTROOT, "Pass: `strBaseUrl == RESTROOT` Str: " + strBaseUrl );
+	});
+});
+
+QUnit.module( "MISC -- requestDigest Tests", function(){
+	var _digest = "";
+	var _testId = "";
+
+	QUnit.test("requestDigest Test 1: Test `requestDigest`", function(assert){
+		// A:
+		var done = assert.async();
+
+		// B: Test
+		Promise.all([
+			sprLib.rest({ url:'_api/contextinfo', type:'POST' }),
+			sprLib.list('Employees').items({ listCols:'Id', queryLimit:'1' })
+		])
+		.then(function(arrAllArrays){
+			_digest = arrAllArrays[0][0].GetContextWebInformation.FormDigestValue;
+			_testId = arrAllArrays[1][0].Id;
+
+			assert.ok( _digest, "(old) $('#__REQUESTDIGEST').val():\n"+ $('#__REQUESTDIGEST').val() );
+			assert.ok( _digest, "(new) _api/contextinfo.FormDigestValue:\n"+ _digest );
+
+			sprLib.list({ name:'Employees', requestDigest:_digest }).update({ ID:_testId, Title:'FDV Test' })
+			.then(function(objData){
+				assert.ok( objData.Id && objData.Title, "objData.Id && objData.Title: "+ objData.Id +'/'+ objData.Title );
+				assert.ok(true, `RESULTS:\n${getAsciiTableStr(objData)}\n************************************************************\n`);
+				done();
+			});
+		})
+		.catch(function(err){
+			assert.ok( (false), err );
+			done();
+		});
+	});
+});
 
 // TODO: Add Utility methods
 

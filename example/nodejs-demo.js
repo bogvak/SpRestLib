@@ -4,8 +4,8 @@
  * DESC: Demonstrate SpRestLib on Node.js
  * REQS: Node 4.x + `npm install sprestlib`
  * EXEC: `node nodejs-demo.js (sp-username) (sp-password) {sp-hostUrl}`
- * VER.: 1.8.0-beta
- * REL.: 20180623
+ * VER.: 1.9.0
+ * REL.: 20181210
  * REFS: HOWTO: Authenticate to SharePoint Online (*.sharepoint.com)
  * - https://allthatjs.com/2012/03/28/remote-authentication-in-sharepoint-online/
  * - http://paulryan.com.au/2014/spo-remote-authentication-rest/
@@ -43,7 +43,7 @@ if ( !sprLib || !sprLib.version ) {
 // SETUP: Set `nodeEnabled` flag so SpRestLib knows this is a Node app (tells library to use the `https` module)
 sprLib.nodeConfig({ nodeEnabled:true });
 
-// Lets go!
+// BEGIN DEMO:
 console.log('\nStarting demo...');
 console.log('================================================================================');
 console.log(`> SpRestLib version: ${sprLib.version}\n`);
@@ -57,6 +57,14 @@ var gBinarySecurityToken = "";
 var gAuthCookie1 = "";
 var gAuthCookie2 = "";
 var gStrReqDig = "";
+var gStrFilePath = "/sites/dev/Shared Documents/";	// text test
+var gStrFileLoca = "./";							// text test
+var gStrFileName = "sprestlib-demo.html";			// text test
+/*
+var gStrFilePath = "/sites/dev/Shared Documents/";	// binary test
+var gStrFileLoca = "./img/";						// binary test
+var gStrFileName = "setup01.png";					// binary test
+*/
 
 Promise.resolve()
 .then(() => {
@@ -207,23 +215,34 @@ Promise.resolve()
 	console.log('..\n..create done!');
 	console.log('New item ID...: '+ objCrud.ID);
 
-	console.log("\nTEST 4: sprLib.rest() - upload a local file to 'Documents' Library");
-	console.log('---------------------------------------------');
-
-	// IMPORTANT: path must be escaped or "TypeError: Request path contains unescaped characters"
-	var strFilePath = "/sites/dev/Shared%20Documents/upload";
-	var strFileName = "sprestlib-demo.html";
-	var strUrl = "_api/web/GetFolderByServerRelativeUrl('"+strFilePath+"')/Files/add(url='"+strFileName+"',overwrite=true)";
-
-	return sprLib.rest({
-		url: strUrl,
-		type: "POST",
+	console.log("\nTEST 4: sprLib.rest() - upload a local file to 'Shared Documents' Library");
+	console.log("------------------------------------------------------------");
+	// NOTE: Do not use encoding option with `fs.readFileSync()`! (as is, returns a buffer that works for all file types)
+	// @see: https://nodejs.org/api/fs.html#fs_fs_readfilesync_path_options
+	return sprLib.folder(gStrFilePath).upload({
+		name: gStrFileName,
+		data: fs.readFileSync(gStrFileLoca+gStrFileName),
 		requestDigest: gStrReqDig,
-		data: new Buffer( fs.readFileSync('./'+strFileName, 'utf8') )
+		overwrite: true
 	});
 })
-.then((arrResults) => {
-	console.log('SUCCESS: "'+ arrResults[0].Name +'" uploaded to: '+ arrResults[0].ServerRelativeUrl );
+.then((objFile) => {
+	console.log('SUCCESS: `'+ objFile.Name +'` uploaded to: `'+ objFile.ServerRelativeUrl +'`' );
+
+	console.log("\nTEST 5: sprLib.file().get() - get a file from 'Shared Documents' Library");
+	console.log("------------------------------------------------------------");
+	return sprLib.file(gStrFilePath+'/'+gStrFileName).get();
+})
+.then((fileBuffer) => {
+	if ( fileBuffer ) {
+		var strFileGet = 'node-file-get-'+ new Date().toISOString().replace(/\:|\.|\-/g,'') +'-'+ gStrFileName;
+		// NOTE: A binary buffer is returned by `file().get()` - save it using code below
+		fs.writeFileSync( strFileGet, Buffer.from(fileBuffer,'binary') );
+		console.log('SUCCESS: "'+ strFileGet +'" downloaded!');
+	}
+	else {
+		console.log('FAIL: `fileBuffer` is empty');
+	}
 })
 .then(() => {
 	console.log('\n================================================================================');

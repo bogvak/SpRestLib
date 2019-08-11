@@ -27,11 +27,19 @@
 |*|  SOFTWARE.
 \*/
 
+/*
+* TODO-2.0:
+* refactor to enable use of strict mode
+*/
+
+/**
+* SpRestLib
+* @see: [SP REST API Index](https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/sharepoint-net-server-csom-jsom-and-rest-api-index)
+*/
 (function(){
 	// APP VERSION/BUILD
-	var APP_VER = "1.8.0-beta";
-	var APP_BLD = "20180708";
-	var DEBUG = false; // (verbose mode/lots of logging)
+	var APP_VER = "1.10.0-beta";
+	var APP_BLD = "20190214";
 	// ENUMERATIONS
 	// REF: [`SP.BaseType`](https://msdn.microsoft.com/en-us/library/office/jj246925.aspx)
 	var ENUM_BASETYPES = {
@@ -61,19 +69,26 @@
 	};
 	// APP OPTIONS
 	var APP_OPTS = {
-		baseUrl:         '..',
-		busySpinnerHtml: '<div class="sprlib-spinner"><div class="sprlib-bounce1"></div><div class="sprlib-bounce2"></div><div class="sprlib-bounce3"></div></div>',
-		cache:           false,
-		cleanColHtml:    true,
-		currencyChar:    '$',
-		language:        'en',
-		maxRetries:      2,
-		maxRows:         5000,
-		metadata:        false,
-		isNodeEnabled:   false,
-		nodeCookie:      '',
-		nodeServer:      '',
-		retryAfter:      1000
+		baseUrl:          ( typeof _spPageContextInfo !== 'undefined' && _spPageContextInfo.webServerRelativeUrl ? _spPageContextInfo.webServerRelativeUrl : '..' ),
+		busySpinnerHtml:  '<div class="sprlib-spinner"><div class="sprlib-bounce1"></div><div class="sprlib-bounce2"></div><div class="sprlib-bounce3"></div></div>',
+		cache:            false,
+		cleanColHtml:     true,
+		currencyChar:     '$',
+		debug:            false, /* verbose mode/lots of logging; undocumented option used for development */
+		language:         'en',
+		maxRetries:       2,
+		maxRows:          5000, /* Max rows queried - internal app limit (used when getting Lists, Users, etc) */
+		metadata:         false,
+		nodeEnabled:      false,
+		nodeCookie:       '',
+		nodeServer:       '',
+		overwriteUploads: false,
+		queryLimit:       null, /* default queryLimit - allows global override of default SP "100 rows" limit */
+		retryAfter:       1000
+	};
+	// APP AUTHENTICATION
+	var APP_AUTH = {
+		bearer: null
 	};
 	// LIBRARY DEPS
 	var https = null;
@@ -97,33 +112,74 @@
 	/**
 	* Parse XHR Response Headers for SharePoint codes/error messages and return them as a string.
 	*
+	* @private
+	* @since 0.11.0
 	* @return {string} "(404) List not found."
 	*/
 	function parseErrorMessage(jqXHR) {
-		// STEP 1:
+		// STEP 1: Variables
 		jqXHR = jqXHR || {};
+		var strXhrCode = jqXHR.status || 'UNK';
+		var strErrCode = '';
+		var strErrText = jqXHR.responseText || 'UNK';
+		var objErrResp = {};
 
-		// STEP 2:
-		var strErrText = "("+ jqXHR.status +") "+ jqXHR.responseText;
-		var strSpeCode = "";
+		// STEP 2: Parse SharePoint error properties
+		if ( jqXHR.responseText && typeof jqXHR.responseText === 'string' ) {
+			try {
+				// A: Parse string back into object
+				objErrResp = JSON.parse(jqXHR.responseText);
 
-		// STPE 3: Parse out SharePoint/IIS error code and message
-		try {
-			strSpeCode = JSON.parse(jqXHR.responseText).error['code'].split(',')[0];
-			strErrText = "(" + jqXHR.status + ") " + JSON.parse(jqXHR.responseText).error['message'].value;
+				// B: Handle 2 types of `message` (SP API -vs- Graph API)
+				if ( objErrResp.error && objErrResp.error.message && objErrResp.error.message.value ) {
+					/* [SP2016 API] EX: (SPO Dec-2018)
+						{
+						    "error": {
+						        "code": "-2147024891, System.UnauthorizedAccessException",
+						        "message": {
+						            "lang": "en-US",
+						            "value": "Access denied. You do not have permission to perform this action or access this resource."
+						        }
+						    }
+						}
+					*/
+					strErrCode = objErrResp.error.code.split(',')[0];
+					strErrText = objErrResp.error.message.value;
+				}
+				else if ( objErrResp.error && objErrResp.error.message && typeof objErrResp.error.message === 'string' ) {
+					/* [MS Graph v1.0] Dec-2018
+						{
+						  "error": {
+							"code": "Authorization_RequestDenied",
+							"message": "Insufficient privileges to complete the operation.",
+							"innerError": {
+							  "request-id": "f7455057-474a-4c7d-9b69-3d1844d05910",
+							  "date": "2018-12-16T18:34:31"
+							}
+						  }
+						}
+					*/
+					strErrCode = objErrResp.error.code;
+					strErrText = objErrResp.error.message;
+				}
+			}
+			catch (ex) {
+				if (APP_OPTS.debug) {
+					console.warn('Unable to parse jqXHR response!');
+					console.log(jqXHR.responseText);
+				}
+			}
 		}
-		catch (ex) {
-			if (DEBUG) { console.warn('Unable to parse jqXHR response:\n' + jqXHR.responseText); }
-		}
 
-		// Done!
-		return strErrText;
+		// LAST: Return parsed error message
+		return ( "("+ strXhrCode +") "+ (strErrCode ? "["+strErrCode+"] " : "") + strErrText );
 	}
 
 	/**
 	* Query SharePoint for a current `__REQUESTDIGEST`/contextinfo token used in `X-RequestDigest` headers
 	* Sets the form value for `__REQUESTDIGEST` if it exists
 	*
+	* @private
 	* @return {string} "0x1925741C8C2A5DA6BA9338[...C8ED,18 Apr 2018 03:19:26 -0000"
 	*/
 	function doRenewDigestToken() {
@@ -171,14 +227,127 @@
 	this.sprLib = {};
 	sprLib.version = APP_VER+'-'+APP_BLD;
 
+	// API: Authentication
+	/**
+	* Authentication Methods / Auth token/option getters/setters
+	* @public
+	* @since 1.10.0
+	*/
+	sprLib.auth = function auth(inOpt) {
+		var _appAuth = {};
+
+		// A: Options setup
+		inOpt = inOpt || {};
+		var _pageDigest = ( typeof document !== 'undefined' && document.getElementById('__REQUESTDIGEST') ? document.getElementById('__REQUESTDIGEST').value : null );
+
+		/**
+		* Getter/Setter for a few app options in `APP_AUTH`
+		*
+		* @public
+		* @param {object} inOpt - one or more auth options to set
+		* @returns {object} Return value of a few APP_AUTH
+		* @example - get options - `sprLib.auth()`
+		* @example - set baseUrl - `sprLib.auth({ pageDigest:'ABC123' })`
+		* @since 1.10.0
+		*/
+
+		/*
+		_appAuth.digest = function(inOpt) {
+			if ( !inOpt ) return _pageDigest;
+			var _requestDigest = ( (inOpt && inOpt.requestDigest) || (typeof document !== 'undefined' && document.getElementById('__REQUESTDIGEST') ? document.getElementById('__REQUESTDIGEST').value : null));
+		}
+		// doesnt work
+		_appAuth.digest.prototype = {
+			renew: function(){
+				return doRenewDigestToken();
+			}
+		}
+		*/
+
+		// TODO: option to set `bearer` Graph token
+
+		// LAST: Return this new List
+		return _appAuth;
+	}
+
+	// API: UTILITY: Token
+	// TODO-2.0: will become DEPRECATED: move under a new parent: ~`sprLib.auth().token().renew()`
+	sprLib.renewSecurityToken = function renewSecurityToken() {
+		return doRenewDigestToken();
+	}
+
 	// API: OPTIONS
 	/**
-	* Getter/Setter for the app option APP_OPTS.baseUrl (our _api call base)
+	* Getter/Setter for a few app options in `APP_OPTS`
 	*
-	* @param {string} `inStr` - URL to use as the root of API calls
+	* @public
+	* @param {object} inOpt - one or more options to set
+	* @returns {object} Return value of a few APP_OPTS
+	* @example - get options - `sprLib.options();`
+	* @example - set baseUrl - `sprLib.options({ baseUrl:'/sites/devtest' });`
+	* @since 1.9.0
+	*/
+	sprLib.options = function options(inOpt) {
+		// CASE 1: Act as a GETTER when no value passed
+		if ( !inOpt || typeof inOpt !== 'object' ||
+			(
+				!inOpt.hasOwnProperty('baseUrl') && !inOpt.hasOwnProperty('queryLimit')
+				&& !inOpt.hasOwnProperty('nodeEnabled') && !inOpt.hasOwnProperty('nodeCookie') && !inOpt.hasOwnProperty('nodeServer')
+				&& !inOpt.hasOwnProperty('debug')
+			)
+		) {
+			return {
+				baseUrl: APP_OPTS.baseUrl,
+				nodeCookie: APP_OPTS.nodeCookie,
+				nodeEnabled: APP_OPTS.nodeEnabled,
+				nodeServer: APP_OPTS.nodeServer,
+				queryLimit: APP_OPTS.queryLimit
+			};
+		}
+
+		// CASE 2: Act as a SETTER
+
+		// A: Check options
+		if ( inOpt.baseUrl     && typeof inOpt.baseUrl     !== 'string'  ) { console.warn('Warning: `baseUrl` should be a string'); return; }
+		if ( inOpt.nodeCookie  && typeof inOpt.nodeCookie  !== 'string'  ) { console.warn('Warning: `nodeCookie` should be a string'); return; }
+		if ( inOpt.nodeEnabled && typeof inOpt.nodeEnabled !== 'boolean' ) { console.warn('Warning: `nodeEnabled` should be a boolean'); return; }
+		if ( inOpt.nodeServer  && typeof inOpt.nodeServer  !== 'string'  ) { console.warn('Warning: `nodeServer` should be a string'); return; }
+		if ( inOpt.queryLimit  && typeof inOpt.queryLimit  !== 'number'  ) { console.warn('Warning: `queryLimit` should be a number'); return; }
+
+		// B: Set options
+		if ( inOpt.baseUrl     ) APP_OPTS.baseUrl     = inOpt.baseUrl.replace(/\/+$/,'');
+		if ( inOpt.nodeCookie  ) APP_OPTS.nodeCookie  = inOpt.nodeCookie;
+		if ( inOpt.nodeServer  ) APP_OPTS.nodeServer  = inOpt.nodeServer;
+		if ( typeof inOpt.nodeEnabled === 'boolean'   ) APP_OPTS.nodeEnabled = inOpt.nodeEnabled;
+		if ( typeof inOpt.queryLimit  !== 'undefined' ) APP_OPTS.queryLimit  = inOpt.queryLimit; // allow `null` so value can be un-set
+
+		// C: Undocumented options
+		if ( typeof inOpt.debug === 'boolean' ) {
+			APP_OPTS.debug = inOpt.debug;
+			return {
+				debug: APP_OPTS.debug
+			};
+		}
+
+		// LAST: Return current option values
+		return {
+			baseUrl: APP_OPTS.baseUrl,
+			nodeCookie: APP_OPTS.nodeCookie,
+			nodeEnabled: APP_OPTS.nodeEnabled,
+			nodeServer: APP_OPTS.nodeServer,
+			queryLimit: APP_OPTS.queryLimit
+		};
+	}
+
+	// DEPRECATED: TODO-2.0: Will be removed in v2.0.0 - use `options()` instead
+	/**
+	* Getter/Setter for the app option APP_OPTS.baseUrl
+	*
+	* @public
+	* @param {string} inStr - URL to use as the root of API calls
+	* @returns {string} Return value of APP_OPTS.baseUrl
 	* @example - set baseUrl - `sprLib.baseUrl('/sites/devtest');`
 	* @example - get baseUrl - `sprLib.baseUrl();`
-	* @return {string} Return value of APP_OPTS.baseUrl
 	*/
 	sprLib.baseUrl = function baseUrl(inStr) {
 		// CASE 1: Act as a GETTER when no value passed
@@ -186,8 +355,20 @@
 
 		// CASE 2: Act as a SETTER
 		APP_OPTS.baseUrl = inStr.replace(/\/+$/,'');
-		if (DEBUG) console.log('APP_OPTS.baseUrl = '+APP_OPTS.baseUrl);
+
+		if (APP_OPTS.debug) console.log('APP_OPTS.baseUrl = '+APP_OPTS.baseUrl);
 	}
+
+	// DEPRECATED: TODO-2.0: Will be removed in v2.0.0 - use `options()` instead
+	// API: NODEJS: Setup
+	sprLib.nodeConfig = function nodeConfig(inOpt) {
+		inOpt = (inOpt && typeof inOpt === 'object' ? inOpt : {});
+		APP_OPTS.nodeEnabled = (typeof inOpt.nodeEnabled !== 'undefined' ? inOpt.nodeEnabled : true);
+		APP_OPTS.nodeCookie = inOpt.cookie || '';
+		APP_OPTS.nodeServer = inOpt.server || '';
+	}
+
+	// TODO: TARGET-1.11.0: Add `baseUrl` to `file()` method
 
 	// API: FILE
 	/**
@@ -231,43 +412,214 @@
 
 		// C: Ensure `_fullName` does not end with a slash ("/")
 		_fullName = _fullName.replace(/\/$/gi,'');
-		_dirName = _fullName.substring(0, _fullName.lastIndexOf('/'));
-		_fldName = _fullName.substring(_fullName.lastIndexOf('/')+1);
+		//_pathName = _fullName.substring(0, _fullName.lastIndexOf('/'));
+		_fileName = _fullName.substring(_fullName.lastIndexOf('/')+1);
 
-		// D: Add Public Methods
-		// .checkin/checkout -- @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FileCheckOut
-		// .delete() // headers: { "X-HTTP-Method":"DELETE" },
-		// .recycle()
-		// .get() (?) // _api/web/GetFolderByServerRelativeUrl('')/Files/get(url='')
-		// @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FileCollection
-		// "The GetFileByServerRelativeUrl endpoint is recommended way to get a file. See SP.File request examples."
+		// D: Ensure a full path
+		// Allow relative names for web users
+		if ( _fullName.indexOf('/') != 0 && _spPageContextInfo && _spPageContextInfo.webServerRelativeUrl ) {
+			_fullName = _spPageContextInfo.webServerRelativeUrl + _fullName;
+		}
 
 		/**
-		* Get File information
+		* CheckIn a File
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FileCheckIn
+		* @since 1.9.0
 		*
+		* @param `inOpt` (object) - can contain `comment` and `type` options
+		* @example: sprLib.file('/site/Documents/MyDoc.docx').checkin("All done!")
+		* @returns: (boolean) - `true` on success
+		*/
+		_newFile.checkin = function(inOpt) {
+			return new Promise(function(resolve, reject) {
+				// A: Options setup
+				inOpt = inOpt || {};
+				inOpt.comment = inOpt.comment || "";
+				// DOCS: "The SP.CheckinType for the file: MinorCheckIn = 0; MajorCheckIn = 1; OverwriteCheckIn = 2."
+				if ( inOpt.type && ['major','minor','overwrite'].indexOf(inOpt.type.toLowerCase()) == -1 ) {
+					console.warn("Check your options! Available checkin() `type` options are: `major`,`minor`,`overwrite`");
+					inOpt.type = "1"; // Default to "Major"
+				}
+				else {
+					inOpt.type = (inOpt.type || 'major').toLowerCase().replace('major',1).replace('minor',0).replace('overwrite',2);
+				}
+
+				// B:
+				sprLib.rest({
+					type: "POST",
+					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')"
+						+ "/CheckIn(comment='"+ inOpt.comment +"',checkintype="+ inOpt.type +")"
+				})
+				.then(function(arrData){
+					// NOTE: SharePoint fall 2018 returns: `{ CheckIn: null }`
+					resolve( true );
+				})
+				.catch(function(strErr){
+					// EX: "(423) The file "Shared Documents/check-me-out.pptx" is not checked out."
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* CheckOut a File
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FileCheckOut
+		* @since 1.9.0
+		*
+		* @returns: (boolean) - `true` on success
+		*/
+		_newFile.checkout = function() {
+			return new Promise(function(resolve, reject) {
+				sprLib.rest({
+					type: "POST",
+					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')/CheckOut"
+				})
+				.then(function(arrData){
+					// NOTE: SharePoint fall 2018 returns: `{ CheckOut: null }`
+					resolve( true );
+				})
+				.catch(function(strErr){
+					// EX: "(423) The file "/sites/dev/Shared Documents/checkinout/check-me-out.pptx" is checked out for editing by i:0#.f|membership|admin@h[...]"
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* Delete a File (**permanent** - skips recycle bin!)
+		* @since 1.9.0
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx
+		*
+		* @returns: (boolean) - `true` on success
+		*/
+		_newFile.delete = function() {
+			return new Promise(function(resolve, reject) {
+				sprLib.rest({
+					type: "POST",
+					headers: { "X-HTTP-Method":"DELETE" },
+					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')",
+					metadata: false
+				})
+				.then(function(arrData){
+					/* NOTE: SharePoint fall 2018 returns
+					* `{ location: null }`
+					*/
+
+					// Done
+					resolve( true );
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* Get a File (binary or text)
+		* @since 1.8.0
+		* @see: [https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FileRequestExamples](The GetFileByServerRelativeUrl endpoint is recommended way to get a file. See SP.File request examples)
+		*
+		* @returns: a File as a Blob
+		*/
+		_newFile.get = function() {
+			return new Promise(function(resolve, reject) {
+				sprLib.rest({
+					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')/$value",
+					headers: {'binaryStringResponseBody':true},
+					metadata: false
+				})
+				.then(function(data){
+					if ( typeof Blob !== 'undefined' ) {
+						// Web browser: Return blob from ArrayBuffer
+						resolve( new Blob([data], {type:"application/octet-stream"}) );
+					}
+					else {
+						resolve( Buffer.from(data,'binary') );
+					}
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* Get information about a File
+		* Optionally include a version tag to get info about a certain file version
+		* @since 1.8.0
+		*
+		* @param `inOpt` (object) - (`version` prop optional)
 		* @returns: an object containing information about the current File
 		* @example: sprLib.file('/site/Documents/MyDoc.docx').info()
+		* @example: sprLib.file('/site/Documents/MyDoc.docx').info({ version:12 })
 		*/
-		_newFile.info = function() {
+		_newFile.info = function(inOpt) {
 			return new Promise(function(resolve, reject) {
+				var objData = {};
+
+				// A: Check opts
+				if ( inOpt && inOpt.hasOwnProperty('version') && isNaN(Number(inOpt.version)) ) {
+					console.error("ERROR: 'version' should be a number! EX: `sprLib.file('Sample.docx').info({ version:12 })`");
+					console.error("ARGS:");
+					console.error(inOpt);
+					return null;
+				}
+
+				// B: Get file info
 				sprLib.rest({
 					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')",
 					queryCols: ['Author/Id','CheckedOutByUser/Id','LockedByUser/Id','ModifiedBy/Id',
-						'CheckInComment','CheckOutType','ETag','Exists','Length','Level','MajorVersion','MinorVersion',
-						'Name','ServerRelativeUrl','TimeCreated','TimeLastModified','UniqueId'],
+						'CheckInComment','CheckOutType','ETag','Exists','Length','MajorVersion','MinorVersion',
+						'Name','ServerRelativeUrl','TimeCreated','TimeLastModified','UniqueId','UIVersionLabel'],
 					metadata: false
 				})
 				.then(function(arrData){
 					// A: Capture info
-					var objData = ( arrData && arrData.length > 0 ? arrData[0] : {} ); // FYI: Empty object is correct return type when file-not-found
+					objData = ( arrData && arrData.length > 0 ? arrData[0] : {} ); // FYI: Empty object is correct return type when file-not-found
 
-					// B: Remove junk
+					// B: Remove junk for user fields, enure an object is returned
 					['Author', 'CheckedOutByUser', 'LockedByUser', 'ModifiedBy'].forEach(function(field){
+						// Remove "junk"
 						if ( objData[field] && objData[field].__deferred ) delete objData[field].__deferred;
 						if ( objData[field] && objData[field].__metadata ) delete objData[field].__metadata;
+						// Ensure an empty array isnt returned (eg: files not checked out wont have a CheckedOutByUser value)
+						if ( objData[field] && Array.isArray(objData[field]) && objData[field].length == 0 ) objData[field] = {};
 					});
 
-					// C: Done
+					// C: Remap some properties
+					if ( objData.TimeCreated )      { objData.Created  = objData.TimeCreated;      delete objData.TimeCreated; }
+					if ( objData.TimeLastModified ) { objData.Modified = objData.TimeLastModified; delete objData.TimeLastModified; }
+
+					// D: Handle version option
+					if ( inOpt && inOpt.version ) {
+						return sprLib.rest({
+							url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')/versions("+ (Number(inOpt.version)*512) +")",
+							queryCols: ['CheckInComment','Created','IsCurrentVersion','Length','VersionLabel'],
+							metadata: false
+						})
+						.catch(function(strErr){
+							throw strErr;
+						})
+					}
+					else {
+						return null;
+					}
+				})
+				.then(function(arrVersion){
+					// NOTE: Check for `VersionLabel` as it is not present when items are not version controlled!
+					if ( arrVersion && arrVersion[0] && arrVersion[0].VersionLabel ) {
+						// Gather version metadata
+						Object.keys(arrVersion[0]).forEach(function(key){
+							if ( key != 'VersionLabel' ) objData[key] = arrVersion[0][key];
+						});
+
+						// Update version metadata from first query
+						objData.MajorVersion = arrVersion[0].VersionLabel.split('.')[0];
+						objData.MinorVersion = arrVersion[0].VersionLabel.split('.')[1];
+						objData.UIVersionLabel = arrVersion[0].VersionLabel;
+					}
+
+					// Done
 					resolve( objData );
 				})
 				.catch(function(strErr){
@@ -278,6 +630,7 @@
 
 		/**
 		* Get File permissions
+		* @since 1.8.0
 		*
 		* @returns: array of objects with `Member` and `Roles` properties
 		* @example: sprLib.file('/site/Documents/MyDoc.docx').perms().then( arr => console.log(arr) );
@@ -294,7 +647,8 @@
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
 					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')/ListItemAllFields/RoleAssignments",
-					queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden']
+					queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden'],
+					metadata: false
 				})
 				.then(function(arrData){
 					// STEP 1: Transform: Results s/b 2 keys with props inside each
@@ -321,36 +675,26 @@
 		}
 
 		/**
-		* Get File's version metadata
-		* Return an object containing information about the File version
-		*
-		* @param `inVer` - version label
-		* @example: sprLib.file('/site/Documents/MyDoc.docx').version('99')
-		* @returns: Object containing version properties
+		* Recycle a File (moves item to site recycle bin)
+		* @since 1.9.0
 		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx
+		*
+		* @returns: (boolean) - `true` on success
 		*/
-		_newFile.version = function(inVer) {
+		_newFile.recycle = function() {
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
-					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')",
-					queryCols: ['Author/Id','CheckedOutByUser/Id','LockedByUser/Id','ModifiedBy/Id',
-						'CheckInComment','CheckOutType','ETag','Exists','Length','Level','MajorVersion','MinorVersion',
-						'Name','ServerRelativeUrl','TimeCreated','TimeLastModified','UniqueId'],
-					queryFilter: "VersionLabel eq '"+ inVer +"'",
+					type: "POST",
+					url: "_api/web/GetFileByServerRelativeUrl('"+ _fullName +"')/recycle()",
 					metadata: false
 				})
 				.then(function(arrData){
-					// A: Capture info
-					var objData = ( arrData && arrData.length > 0 ? arrData[0] : {} ); // FYI: Empty object is correct return type when file-not-found
+					/* NOTE: SharePoint fall 2018 returns
+					* `{ Recycle: "ebced81f-4bac-4e94-a316-781e89e5a83e" }`
+					*/
 
-					// B: Remove junk
-					['Author', 'CheckedOutByUser', 'LockedByUser', 'ModifiedBy'].forEach(function(field){
-						if ( objData[field] && objData[field].__deferred ) delete objData[field].__deferred;
-						if ( objData[field] && objData[field].__metadata ) delete objData[field].__metadata;
-					});
-
-					// C: Done
-					resolve( objData );
+					// Done
+					resolve( true );
 				})
 				.catch(function(strErr){
 					reject( strErr );
@@ -358,81 +702,22 @@
 			});
 		}
 
-		/*
-		// WIP: get file
-		web/getfilebyserverrelativeurl('/Shared Documents/filename.docx')/$value
-		/sites/dev/_api/web/getfilebyserverrelativeurl('/sites/dev/SiteAssets/qunit-tests.js')
-		*/
-
-		// TODO: WIP: .upload({ data:arrayBuffer/FilePicker/whatev, overwrite:BOOL })
-		/**
-		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FileCollectionAdd
-		*/
-		_newFile.upload = function() {
-			return new Promise(function(resolve, reject) {
-				// CASE 1: NODE.JS
-				/*
-				// TODO: _fullName -> split for vars below!
-				var strFilePath = "/sites/dev/Shared%20Documents/upload";
-				var strFileName = "sprestlib-demo.html";
-				//var _dirName = _fullName.substring(0, _fullName.lastIndexOf('/'));
-				//var _fldName = _fullName.substring(_fullName.lastIndexOf('/')+1);
-				var strUrl = "_api/web/GetFolderByServerRelativeUrl('"+strFilePath+"')/Files/add(url='"+strFileName+"',overwrite=true)";
-				// IMPORTANT: path must be escaped or "TypeError: Request path contains unescaped characters"
-
-				sprLib.rest({
-					url: strUrl,
-					type: "POST",
-					requestDigest: gStrReqDig,
-					data: new Buffer( fs.readFileSync('./'+strFileName, 'utf8') )
-				});
-				.then((arrResults) => {
-					console.log('SUCCESS: "'+ arrResults[0].Name +'" uploaded to: '+ arrResults[0].ServerRelativeUrl );
-				});
-				*/
-
-				// CASE 2: CLIENT BROWSER: ask for a FilePicker or array buffer
-				/*
-				else if ( !$('#filePicker') || !$('#filePicker')[0] || !$('#filePicker')[0].value ) {
-					alert("Please select a file with the File Picker!");
-					return;
-				}
-
-				// STEP 2: Status update
-				$('#console').append('Starting file upload... <br>');
-
-				// STEP 3: Get the local file as an array buffer
-				var reader = new FileReader();
-				reader.readAsArrayBuffer( $('#filePicker')[0].files[0] );
-				reader.onloadend = function(e){
-					var parts = $('#filePicker')[0].value.split('\\');
-					var fileName = parts[parts.length - 1];
-					var strAjaxUrl = _spPageContextInfo.siteAbsoluteUrl
-						+ "/_api/web/lists/getByTitle('"+ $('#selDestLib').val() +"')"
-						+ "/RootFolder/files/add(overwrite=true,url='"+ fileName +"')";
-
-					sprLib.rest({
-						url: strAjaxUrl,
-						type: "POST",
-						data: e.target.result
-					})
-					.then(function(arr){
-						$('#console').append('SUCCESS: "'+ arr[0].Name +'" uploaded to: '+ arr[0].ServerRelativeUrl +'<br>');
-					})
-
-				*/
-			});
-		};
-
 		// LAST: Return this new File
 		return _newFile;
 	}
 
+	// TODO: TARGET-1.11.0: Add `baseUrl` to `folder()` method
+
 	// API: FOLDER
 	/**
-	* @param `inOpt` (object)/(string) - required - (`name` prop reqd)
+	* SharePoint Library Folder Resource methods
 	*
+	* @param `inOpt` (object)/(string) - required - (`name` prop reqd)
+	* @example - `sprLib.folder('SiteAssets');`
+	* @example - `sprLib.folder('/sites/dev/SiteAssets/');`
+	* @example - `sprLib.folder({ 'name':'/sites/dev/SiteAssets/' });`
 	* @since 1.8.0
+	* @see: [File API](https://gitbrent.github.io/SpRestLib/docs/api-folder.html)
 	* @see: [Files and folders REST API reference](https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_Folder)
 	*/
 	sprLib.folder = function folder(inOpt) {
@@ -440,7 +725,11 @@
 		inOpt = inOpt || {};
 		var _newFolder = {};
 		var _fullName = "";
-		var _requestDigest = (inOpt.requestDigest || (typeof document !== 'undefined' && document.getElementById('__REQUESTDIGEST') ? document.getElementById('__REQUESTDIGEST').value : null));
+		// TODO: store `listGUID` and `listName` on _newFolder, then check/use them in subsequent ops
+
+		// TODO: TARGET: 1.11.0
+		// Add `baseUrl` to `folder()` method
+		// elevate `urlBase` up here and use in all methods below - most are just "./" now (d'oh)
 
 		// B: Options check/set
 		if ( inOpt && typeof inOpt === 'string' ) {
@@ -460,58 +749,94 @@
 		_fullName = _fullName.replace(/\/$/gi,'');
 
 		// D: Public Methods ----------------------------------------------
-		// .perms()
-		// .create() // .add()?
-		// .delete() // headers: { "X-HTTP-Method":"DELETE" },
-		// .recycle() // POST to: /recycle
-		//
-		// a uniuqe folder:
-		// /sites/dev/_api/web/GetFolderByServerRelativePath(decodedurl='/sites/dev/SiteAssets/js')
+		// TODO: implement these Methods:
+		// FYI: /_api/web/GetFolderByServerRelativeUrl(‘{folder url}’)/ListItemAllFields/breakroleinheritance(true)
 
 		/**
-		* Get information (properties) for a Folder
+		* Add/Create a new Folder
+		* @since 1.9.0
 		*
-		* @example: sprLib.folder('/site/Documents/Finance').info()
-		* @returns: Object with Folder properties
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FolderCollectionAdd
+		* @returns: (object) - folder object returned by SharePoint
 		*/
-		_newFolder.info = function() {
+		_newFolder.add = function(inOpt) {
 			return new Promise(function(resolve, reject) {
+				// A: Options setup
+				var strFullName = "";
+				// TODO: the logic below could be written better - if we really cant use `baseUrl` unless it begins with "/" or "http", then check above and return error up front
+				var urlBase = ( APP_OPTS.baseUrl.indexOf('http') == 0 || APP_OPTS.baseUrl.indexOf('/') == 0 ? APP_OPTS.baseUrl : ( _spPageContextInfo && _spPageContextInfo.webServerRelativeUrl ? _spPageContextInfo.webServerRelativeUrl : APP_OPTS.baseUrl ) );
+				inOpt = (inOpt ? inOpt : null);
+				if ( !inOpt || typeof inOpt !== 'string' ) {
+					console.error("Error: `folder().add()` requires a string folder name!");
+					return null;
+				}
+
+				// B: Ensure there is a fully-qualified URL
+				strFullName = ( inOpt.indexOf('http') == 0 || inOpt.indexOf('/') == 0 ? inOpt : encodeURI(_fullName +'/'+ inOpt) );
+
+				// C: Create folder
+				// NOTE: Both the `url` and the string passed to `add()` must be fully-qualified URLs (ex: not "../..")
 				sprLib.rest({
-					url: "_api/web/GetFolderByServerRelativePath(decodedurl='"+ _fullName +"')",
-					queryCols: [
-						'Name','ItemCount','ServerRelativeUrl','StorageMetrics/TotalSize',
-						'Properties/vti_x005f_timecreated','Properties/vti_x005f_timelastmodified','Properties/vti_x005f_hassubdirs',
-						'Properties/vti_x005f_isbrowsable','Properties/vti_x005f_foldersubfolderitemcount','Properties/vti_x005f_listname'
-					],
+					type: "POST",
+					url: urlBase+"/_api/web/folders/add('"+ strFullName +"')",
 					metadata: false
 				})
 				.then(function(arrData){
-					// A: Capture info
-					var objFolder = ( arrData && arrData.length > 0 ? arrData[0] : {} ); // FYI: Empty object is correct return type when file-not-found
-
-					// B: Remap properties
-					if ( objFolder.Properties ) {
-						objFolder.Created     = ( objFolder.Properties.vti_x005f_timecreated ? objFolder.Properties.vti_x005f_timecreated : null );
-						objFolder.FolderCount = ( objFolder.Properties.vti_x005f_foldersubfolderitemcount ? objFolder.Properties.vti_x005f_foldersubfolderitemcount : 0 );
-						objFolder.ItemCount   = ( objFolder.ItemCount ? objFolder.ItemCount : 0 );
-						objFolder.GUID        = ( objFolder.Properties.vti_x005f_listname ? objFolder.Properties.vti_x005f_listname : null );
-						objFolder.HasSubdirs  = ( objFolder.Properties.vti_x005f_hassubdirs ? objFolder.Properties.vti_x005f_hassubdirs == "true" : false );
-						objFolder.Hidden      = ( objFolder.Properties.vti_x005f_isbrowsable ? objFolder.Properties.vti_x005f_isbrowsable == "false" : false );
-						objFolder.Level       = ( objFolder.Properties.vti_x005f_level ? objFolder.Properties.vti_x005f_level : 1 );
-						objFolder.Modified    = ( objFolder.Properties.vti_x005f_timelastmodified ? objFolder.Properties.vti_x005f_timelastmodified : null );
-
-						delete objFolder.Properties;
-					}
-
-					// C: Remap storage metrics
-					if ( objFolder.StorageMetrics && objFolder.StorageMetrics.TotalSize ) {
-						objFolder.TotalSize = Number(objFolder.StorageMetrics.TotalSize) || 0;
-
-						delete objFolder.StorageMetrics;
-					}
+					var objNewFolder = (arrData && arrData[0] ? arrData[0] : null);
+					/* EX:
+						.-----------------------------------------------------------------------------------------------------------------------------------------------------------.
+						|     Prop Name     |                                                                                        Prop Value                                     |
+						|-------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+						| Files             | {"__deferred":{"uri":"https://a.sharepoint.com/sites/dev/_api/Web/GetFolderByServerRelativePath(decodedurl='/a/Files"}}               |
+						| ListItemAllFields | {"__deferred":{"uri":"https://a.sharepoint.com/sites/dev/_api/Web/GetFolderByServerRelativePath(decodedurl='/a')/ListItemAllFields"}} |
+						| ParentFolder      | {"__deferred":{"uri":"https://a.sharepoint.com/sites/dev/_api/Web/GetFolderByServerRelativePath(decodedurl='/a')/ParentFolder"}}      |
+						| Properties        | {"__deferred":{"uri":"https://a.sharepoint.com/sites/dev/_api/Web/GetFolderByServerRelativePath(decodedurl='/a')/Properties"}}        |
+						| StorageMetrics    | {"__deferred":{"uri":"https://a.sharepoint.com/sites/dev/_api/Web/GetFolderByServerRelativePath(decodedurl='/a')/StorageMetrics"}}    |
+						| Folders           | {"__deferred":{"uri":"https://a.sharepoint.com/sites/dev/_api/Web/GetFolderByServerRelativePath(decodedurl='/a')/Folders"}}           |
+						| Exists            | true                                                                                                                                  |
+						| IsWOPIEnabled     | false                                                                                                                                 |
+						| ItemCount         | 0                                                                                                                                     |
+						| Name              | "DEMO"                                                                                                                                |
+						| ProgID            | null                                                                                                                                  |
+						| ServerRelativeUrl | "/sites/dev/Shared Documents/folder/"                                                                                                 |
+						| TimeCreated       | "2018-11-13T03:34:48Z"                                                                                                                |
+						| TimeLastModified  | "2018-11-13T03:34:48Z"                                                                                                                |
+						| UniqueId          | "2ce2a781-a96a-4b50-aa9f-affe8f404fe4"                                                                                                |
+						| WelcomePage       | ""                                                                                                                                    |
+						'-----------------------------------------------------------------------------------------------------------------------------------------------------------.
+					*/
 
 					// Done
-					resolve( objFolder );
+					resolve( objNewFolder );
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* Delete a Folder (**permanent** - skips recycle bin!)
+		* @since 1.9.0
+		*
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx
+		* @returns: (boolean) - `true` on success
+		*/
+		_newFolder.delete = function() {
+			return new Promise(function(resolve, reject) {
+				sprLib.rest({
+					type: "POST",
+					headers: { "X-HTTP-Method":"DELETE" },
+					url: "_api/web/GetFolderByServerRelativeUrl('"+ _fullName +"')",
+					metadata: false
+				})
+				.then(function(arrData){
+					/* NOTE: SharePoint fall 2018 returns
+					* `{ location: null }`
+					*/
+
+					// Done
+					resolve( true );
 				})
 				.catch(function(strErr){
 					reject( strErr );
@@ -521,6 +846,7 @@
 
 		/**
 		* Get Files and their properties
+		* @since 1.8.0
 		*
 		* @example - relative URL: `sprLib.folder('Shared Documents').files()`
 		* @example - absolute URL: `sprLib.folder('/sites/dev/Shared Documents').files()`
@@ -529,11 +855,11 @@
 		_newFolder.files = function() {
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
-					url: "_api/web/GetFolderByServerRelativePath(decodedurl='"+ _fullName +"')/Files",
+					url: "_api/web/GetFolderByServerRelativeUrl('"+ _fullName +"')/Files",
 					queryCols: [
 						'Author/Id','CheckedOutByUser/Id','LockedByUser/Id','ModifiedBy/Id',
 						'Author/Title','CheckedOutByUser/Title','LockedByUser/Title','ModifiedBy/Title',
-						'CheckInComment','CheckOutType','ETag','Exists','Length','Level','MajorVersion','MinorVersion',
+						'CheckInComment','CheckOutType','ETag','Exists','Length','MajorVersion','MinorVersion',
 						'Name','ServerRelativeUrl','TimeCreated','TimeLastModified','Title','UniqueId'
 					],
 					metadata: false
@@ -564,6 +890,7 @@
 
 		/**
 		* Get Folders and their properties
+		* @since 1.8.0
 		*
 		* @example - relative URL: `sprLib.folder('Shared Documents').folders()`
 		* @example - absolute URL: `sprLib.folder('/sites/dev/Shared Documents').folders()`
@@ -572,7 +899,7 @@
 		_newFolder.folders = function() {
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
-					url: "_api/web/GetFolderByServerRelativePath(decodedurl='"+ _fullName +"')/Folders",
+					url: "_api/web/GetFolderByServerRelativeUrl('"+ _fullName +"')/Folders",
 					queryCols: [
 						'Name','ItemCount','ServerRelativeUrl',
 						'Properties/vti_x005f_timecreated','Properties/vti_x005f_timelastmodified','Properties/vti_x005f_hassubdirs',
@@ -591,10 +918,9 @@
 							objFolder.GUID        = ( objFolder.Properties.vti_x005f_listname ? objFolder.Properties.vti_x005f_listname : null );
 							objFolder.HasSubdirs  = ( objFolder.Properties.vti_x005f_hassubdirs ? objFolder.Properties.vti_x005f_hassubdirs == "true" : false );
 							objFolder.Hidden      = ( objFolder.Properties.vti_x005f_isbrowsable ? objFolder.Properties.vti_x005f_isbrowsable == "false" : false );
-							objFolder.Level       = ( objFolder.Properties.vti_x005f_level ? objFolder.Properties.vti_x005f_level : 1 );
 							objFolder.Modified    = ( objFolder.Properties.vti_x005f_timelastmodified ? objFolder.Properties.vti_x005f_timelastmodified : null );
 
-							delete folder.Properties;
+							delete objFolder.Properties;
 						}
 					});
 
@@ -607,12 +933,237 @@
 			});
 		}
 
+		/**
+		* Get information (properties) for a Folder
+		* @since 1.8.0
+		*
+		* @example: sprLib.folder('/site/Documents/Finance').info()
+		* @returns: Object with Folder properties
+		*/
+		_newFolder.info = function() {
+			return new Promise(function(resolve, reject) {
+				var objFolder = null;
+
+				sprLib.rest({
+					url: "_api/web/GetFolderByServerRelativeUrl('"+ _fullName +"')",
+					queryCols: [
+						'Name','ItemCount','ServerRelativeUrl','StorageMetrics/TotalSize',
+						'Properties/vti_x005f_parentid','Properties/vti_x005f_listtitle','Properties/vti_x005f_listname',
+						'Properties/vti_x005f_timecreated','Properties/vti_x005f_timelastmodified','Properties/vti_x005f_hassubdirs',
+						'Properties/vti_x005f_isbrowsable','Properties/vti_x005f_foldersubfolderitemcount'
+					],
+					metadata: false
+				})
+				.then(function(arrData){
+					// A: Capture info
+					objFolder = ( arrData && arrData.length > 0 ? arrData[0] : {} ); // FYI: Empty object is correct return type when file-not-found
+
+					// B: Remap properties
+					if ( objFolder.Properties ) {
+						objFolder.Created     = ( objFolder.Properties.vti_x005f_timecreated ? objFolder.Properties.vti_x005f_timecreated : null );
+						objFolder.FolderCount = ( objFolder.Properties.vti_x005f_foldersubfolderitemcount ? objFolder.Properties.vti_x005f_foldersubfolderitemcount : 0 );
+						objFolder.ItemCount   = ( objFolder.ItemCount ? objFolder.ItemCount : 0 );
+						objFolder.ListGUID    = ( objFolder.Properties.vti_x005f_listname ? objFolder.Properties.vti_x005f_listname : null ); // NOTE: root Library [List]
+						objFolder.HasSubdirs  = ( objFolder.Properties.vti_x005f_hassubdirs ? objFolder.Properties.vti_x005f_hassubdirs == "true" : false );
+						objFolder.Hidden      = ( objFolder.Properties.vti_x005f_isbrowsable ? objFolder.Properties.vti_x005f_isbrowsable == "false" : false );
+						//objFolder.ParentGUID  = ( objFolder.Properties.vti_x005f_parentid ? objFolder.Properties.vti_x005f_parentid : null );
+						//objFolder.ListTitle   = ( objFolder.Properties.vti_x005f_listtitle ? objFolder.Properties.vti_x005f_listtitle : null ); // NOTE: wont exist for subfolders
+						objFolder.Modified    = ( objFolder.Properties.vti_x005f_timelastmodified ? objFolder.Properties.vti_x005f_timelastmodified : null );
+
+						delete objFolder.Properties;
+					}
+
+					// C: Remap storage metrics
+					if ( objFolder.StorageMetrics && objFolder.StorageMetrics.TotalSize ) {
+						objFolder.TotalSize = Number(objFolder.StorageMetrics.TotalSize) || 0;
+
+						delete objFolder.StorageMetrics;
+					}
+
+					// D: Start chain for `HasUniqueRoleAssignments` prop
+					if ( objFolder.ListGUID ) {
+						return sprLib.rest({
+							url: "_api/web/Lists(guid'"+ objFolder.ListGUID.replace(/\{|\}/g,'') +"')/rootFolder/Folders",
+							queryCols: ['ListItemAllFields/Id'],
+							metadata: false
+						});
+					}
+					else {
+						return null;
+					}
+				})
+				.then(function(arrResults){
+					if ( arrResults && arrResults[0] && arrResults[0].ListItemAllFields && arrResults[0].ListItemAllFields.Id ) {
+						return sprLib.rest({
+							url: "_api/web/Lists(guid'"+ objFolder.ListGUID.replace(/\{|\}/g,'') +"')/items('"+arrResults[0].ListItemAllFields.Id+"')/HasUniqueRoleAssignments",
+							metadata: false
+						});
+					}
+					else {
+						return null;
+					}
+				})
+				.then(function(arrResults){
+					if ( arrResults && arrResults[0] ) {
+						objFolder.HasUniqueRoleAssignments = arrResults[0].HasUniqueRoleAssignments;
+					}
+
+					// Done
+					resolve( objFolder );
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* Get Folder permissions
+		* @since 1.8.0
+		*
+		* @returns: array of objects with `Member` and `Roles` properties
+		* @example: sprLib.folder('/site/SiteAssets/BACKUPS').perms().then( arr => console.log(arr) );
+		* .--------------------------------------------------------------------------------------------------------------------------------------------------------------------------.
+		* |                                        Member                                         |                                      Roles                                       |
+		* |---------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
+		* | {"Title":"Dev Site Members","PrincipalType":"SharePoint Group","PrincipalId":8}       | [{"Hidden":false,"Name":"Design"},{"Hidden":false,"Name":"Edit"}]                |
+		* | {"Title":"Dev Site Owners","PrincipalType":"SharePoint Group","PrincipalId":6}        | [{"Hidden":false,"Name":"Full Control"},{"Hidden":true,"Name":"Limited Access"}] |
+		* | {"Title":"Dev Site Visitors","PrincipalType":"SharePoint Group","PrincipalId":7}      | [{"Hidden":false,"Name":"Read"}]                                                 |
+		* | {"Title":"Excel Services Viewers","PrincipalType":"SharePoint Group","PrincipalId":5} | [{"Hidden":false,"Name":"View Only"}]                                            |
+		* '--------------------------------------------------------------------------------------------------------------------------------------------------------------------------'
+		*/
+		_newFolder.perms = function() {
+			return new Promise(function(resolve, reject) {
+				// Check if this is a Library or a Folder
+				// NOTE: `vti_x005f_listtitle` only exists for top-level Library (any folders will not contain this property)
+				// NOTE: The `vti_x005f_level` prop is useless; the value is 1 for 'SiteAssets' and 'SiteAssets/BACKUPS'!
+				sprLib.rest({
+					url: "_api/web/GetFolderByServerRelativeUrl('"+ _fullName +"')/Properties",
+					queryCols: ['vti_x005f_listtitle'],
+					metadata: false
+				})
+				.then(function(arrData){
+					// Is this a top-level Library (eg: 'SiteAssets')?
+					if ( arrData && arrData[0] && arrData[0].vti_x005f_listtitle ) {
+						return arrData[0].vti_x005f_listtitle;
+					}
+					// Else this is an actual folder, so mimic code from `file().perms()`
+					else {
+						// NOTE: This only works on actual folders (not a Library like `SiteAssets`, but a folder like `SiteAssets/BACKUPS`)
+						// WORKAROUND(?): use "/sites/dev/_api/Web/Lists/GetByTitle('Site%20Assets')/rootFolder/Folders?$expand=ListItemAllFields&$filter=Name%20eq%20%27BACKUP%27" -- to transform Library into a folder...?
+						return sprLib.rest({
+							url: "_api/web/GetFolderByServerRelativeUrl('"+ _fullName +"')/ListItemAllFields/RoleAssignments",
+							queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden'],
+							metadata: false
+						});
+					}
+				})
+				.then(function(data){
+					// Is this a top-level Library (eg: 'SiteAssets')?
+					if ( typeof data === 'string' ) {
+						resolve(
+							sprLib.list({
+								baseUrl: _fullName.substring(0,_fullName.lastIndexOf('/')),
+								name: data
+							}).perms()
+						);
+					}
+					else if ( Array.isArray(data) ) {
+						// STEP 1: Transform: Results s/b 2 keys with props inside each
+						data.forEach(function(objItem,idx){
+							// A: "Rename" the `RoleDefinitionBindings` key to be user-friendly
+							Object.defineProperty(objItem, 'Roles', Object.getOwnPropertyDescriptor(objItem, 'RoleDefinitionBindings'));
+							delete objItem.RoleDefinitionBindings;
+
+							// B: Move `PrincipalId` inside {Member}
+							objItem.Member.PrincipalId = objItem.PrincipalId;
+							delete objItem.PrincipalId;
+
+							// C: Decode PrincipalType into text
+							objItem.Member.PrincipalType = ENUM_PRINCIPALTYPES[objItem.Member.PrincipalType] || objItem.Member.PrincipalType;
+						});
+
+						// STEP 2: Resolve results (NOTE: empty array is the correct default result)
+						resolve( data || [] );
+					}
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* Recycle a Folder (moves item to site recycle bin)
+		* @since 1.9.0
+		*
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx
+		* @returns: (boolean) - `true` on success
+		*/
+		_newFolder.recycle = function() {
+			return new Promise(function(resolve, reject) {
+				sprLib.rest({
+					type: "POST",
+					url: "_api/web/GetFolderByServerRelativeUrl('"+ _fullName +"')/recycle()",
+					metadata: false
+				})
+				.then(function(arrData){
+					/* NOTE: SharePoint fall 2018 returns
+					* `{ Recycle: "ebced81f-4bac-4e94-a316-781e89e5a83e" }`
+					*/
+
+					// Done
+					resolve( true );
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
+			});
+		}
+
+		/**
+		* Upload a File (buffer) to Library
+		* @since: 1.9.0
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn450841.aspx#bk_FileCollectionAdd
+		*
+		* @param `inOpt` (object) - can contain `digest` and `overwrite` options
+		* @example: sprLib.folder('/sites/dev/Documents/uploads').upload({ name:'test.pptx', data:{arrayBuffer blob}, requestDigest:'ABC123', overwrite:true })
+		*/
+		_newFolder.upload = function(inOpt) {
+			return new Promise(function(resolve, reject) {
+				// A: Options setup
+				var urlBase = ( APP_OPTS.baseUrl.indexOf('http') == 0 || APP_OPTS.baseUrl.indexOf('/') == 0 ? APP_OPTS.baseUrl : ( _spPageContextInfo && _spPageContextInfo.webServerRelativeUrl ? _spPageContextInfo.webServerRelativeUrl : APP_OPTS.baseUrl ) );
+				inOpt = (inOpt ? inOpt : null);
+				inOpt.digest    = ( inOpt.requestDigest || (typeof document !== 'undefined' && document.getElementById('__REQUESTDIGEST') ? document.getElementById('__REQUESTDIGEST').value : null) );
+				inOpt.overwrite = ( typeof(inOpt.overwrite) !== 'undefined' && inOpt.overwrite != null ? inOpt.overwrite : APP_OPTS.overwriteUploads );
+
+				// NOTE: Same code is used for both cases: node or browser
+				sprLib.rest({
+					url: "_api/web/GetFolderByServerRelativeUrl('"+_fullName+"')/Files/add(url='"+inOpt.name+"',overwrite="+inOpt.overwrite+")",
+					type: "POST",
+					requestDigest: inOpt.digest,
+					data: inOpt.data
+				})
+				.then(function(arrResults){
+					// Return the new `File` {object}
+					// NOTE: `arrResults[0]` is the actual result, just adding these others to help future-proof
+					resolve( arrResults && arrResults[0] ? arrResults[0] : (arrResults ? arrResults : 'HELP:No File?!') );
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
+			});
+		};
+
 		// LAST: Return this new Folder
 		return _newFolder;
 	}
 
 	// API: LIST (CRUD, select, recycle)
 	/**
+	* SharePoint List/Library methods
+	* @since 1.0
+	*
 	* @param `inOpt` (string) - required - ListName or ListGUID
 	* @example - string - sprLib.list('Documents');
 	*
@@ -622,7 +1173,6 @@
 	* @example - string - sprLib.list({ name:'Documents' });
 	* @example - string - sprLib.list({ name:'Documents', baseUrl:'/sites/dev/sandbox' });
 	* @example - string - sprLib.list({ name:'Documents', baseUrl:'/sites/dev/sandbox', requestDigest:'8675309,05 Dec 2017 01:23:45 -0000' });
-	* @since 1.0.0
 	*/
 	sprLib.list = function list(inOpt) {
 		// A: Options setup
@@ -634,7 +1184,7 @@
 
 		// B: Param check
 		if ( inOpt && typeof inOpt === 'string' ) {
-			// DESIGN: Accept either [ListName] or [ListGUID]
+			// DESIGN: Accept either `name` or `guid`
 			_urlBase += ( gRegexGUID.test(inOpt) ? "(guid'"+ inOpt +"')" : "/getbytitle('"+ inOpt.replace(/\s/gi,'%20') +"')" );
 		}
 		else if ( inOpt && typeof inOpt === 'object' && inOpt.hasOwnProperty('name') ) {
@@ -642,7 +1192,7 @@
 			_urlBase += ( gRegexGUID.test(inOpt.name) ? "(guid'"+ inOpt.name +"')" : "/getbytitle('"+ inOpt.name.replace(/\s/gi,'%20') +"')" );
 		}
 		else {
-			console.error("ERROR: A 'listName' or 'listGUID' is required! EX: `sprLib.list('Employees')` or `sprLib.list({ 'name':'Employees' })`");
+			console.error("ERROR: A List/Library 'name' or 'GUID' is required! EX: `sprLib.list('Employees')` or `sprLib.list({ 'name':'Employees' })`");
 			console.error('ARGS:');
 			console.error(inOpt);
 			return null;
@@ -655,7 +1205,8 @@
 		function getListItemType() {
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
-					url: _urlBase+"?$select=ListItemEntityTypeFullName"
+					url: _urlBase+"?$select=ListItemEntityTypeFullName",
+					metadata: false
 				})
 				.then(function(result){
 					if (result && Array.isArray(result) && result.length == 1) resolve( {"type":result[0].ListItemEntityTypeFullName } );
@@ -679,31 +1230,41 @@
 			// https://msdn.microsoft.com/en-us/library/microsoft.sharepoint.client.fieldtype.aspx
 			// https://msdn.microsoft.com/en-us/library/office/jj245826.aspx#properties
 			return new Promise(function(resolve, reject) {
+				// Filter: Some internal-only fields like the additional 'Title' [link] fields, etc.
+				var arrFilterCols = ['LinkTitleNoMenu', 'LinkTitle', 'ItemChildCount', 'FolderChildCount', 'AppAuthor', 'AppEditor', 'ComplianceAssetId'];
+
 				sprLib.rest({
 					url: _urlBase+"?$select=Fields&$expand=Fields",
+					queryLimit: 5000,
 					metadata: false
 				})
 				.then(function(arrData){
 					var arrColumns = [];
 
 					// STEP 1: Gather fields
-					( arrData && arrData[0] && arrData[0].Fields && arrData[0].Fields.results ? arrData[0].Fields.results : [] )
-					.forEach(function(result,i){
-						// Filter: No Edit/Icon or internal cols (eg: '_ComplianceFlags')
-						if ( !result.Hidden && result.InternalName != 'Edit' && result.InternalName != 'DocIcon' && result.InternalName.indexOf('_') != 0 ) {
-							arrColumns.push({
-								dispName:     result.Title,
-								dataName:     result.InternalName,
-								dataType:     result.TypeAsString,
-								isAppend:     ( result.AppendOnly || false ),
-								isNumPct:     ( result.SchemaXml.toLowerCase().indexOf('percentage="true"') > -1 ),
-								isReadOnly:   result.ReadOnlyField,
-								isRequired:   result.Required,
-								isUnique:     result.EnforceUniqueValues,
-								defaultValue: ( result.DefaultValue || null ),
-								maxLength:    ( result.MaxLength || null )
-							});
-						}
+					( arrData && arrData[0] && arrData[0].Fields ? arrData[0].Fields : [] )
+					.filter(function(result){
+						return (
+							// Filter: No Edit/Icon or internal cols (eg: '_ComplianceFlags')
+							!result.Hidden && result.InternalName != 'Edit' && result.InternalName != 'DocIcon' && result.InternalName.indexOf('_') != 0
+							&& arrFilterCols.indexOf(result.InternalName) == -1
+						);
+					})
+					.forEach(function(result){
+						arrColumns.push({
+							dispName:     result.Title,
+							dataName:     result.InternalName,
+							dataType:     result.TypeAsString,
+							isAppend:     ( result.AppendOnly || false ),
+							isNumPct:     ( result.SchemaXml.toLowerCase().indexOf('percentage="true"') > -1 ),
+							isReadOnly:   result.ReadOnlyField,
+							isRequired:   result.Required,
+							isUnique:     result.EnforceUniqueValues,
+							defaultValue: ( result.DefaultValue || null ),
+							maxLength:    ( result.MaxLength || null ),
+							choiceValues: ( result.Choices && result.Choices.results ? result.Choices.results : (result.Choices ? result.Choices : null) ),
+							allowFillInChoices: ( result.FillInChoice == true || result.FillInChoice == false ? result.FillInChoice : null )
+						});
 					});
 
 					// STEP 2: Resolve Promise
@@ -757,7 +1318,8 @@
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
 					url: _urlBase+'/RoleAssignments?$select=',
-					queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden']
+					queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden'],
+					metadata: false
 				})
 				.then(function(arrData){
 					// STEP 1: Transform: Results s/b 2 keys with props inside each
@@ -836,9 +1398,6 @@
 		* |------------------|---------|-------|-------------------|----------------------|
 		* | `dataName`       | string  | no    | SP.InternalName   | 'Hire_x0020_Date'    |
 		* | `dispName`       | string  | no    | display name      | 'Hire Date'          |
-		* | `currencyFormat` | string  | no    | date format       | `INTL`, `INTLTIME` |
-		* | `dateFormat`     | string  | no    | date format       | `INTL`, `INTLTIME`  |
-		* // TODO: ^^^ lets combine to `format` and be context-sensitive (currency only works with currency etc.)
 		*
 		* listCols properties: used by Library internally
 		*
@@ -933,9 +1492,9 @@
 						var objAjaxQuery = {
 							url     : _urlBase+"/items",
 							type    : "GET",
-							cache   : inObj.cache || APP_OPTS.cache,
-							metadata: inObj.metadata || APP_OPTS.metadata,
-							headers : { "Accept":"application/json;odata=verbose", "X-RequestDigest":_requestDigest }
+							cache   : (typeof inObj.cache    === 'boolean' ? inObj.cache    : APP_OPTS.cache),
+							metadata: (typeof inObj.metadata === 'boolean' ? inObj.metadata : APP_OPTS.metadata),
+							headers : { "X-RequestDigest":_requestDigest }
 						};
 						var arrExpands = [], strExpands = "";
 
@@ -987,7 +1546,7 @@
 							// D: Add orderby (if any)
 							if ( inObj.queryOrderby ) objAjaxQuery.url += (objAjaxQuery.url.indexOf('?') > -1 ? '&':'?') + '$orderby=' + inObj.queryOrderby;
 
-							// E: Add maxrows / Next support
+							// E: Add queryLimit / Next support
 							if ( inObj.queryNext ) {
 								objAjaxQuery.url += '&p_ID='+ inObj.queryNext.prevId +'&$top='+ inObj.queryNext.maxItems;
 							}
@@ -1005,7 +1564,7 @@
 								Object.keys(arrResults[0]).forEach(function(colStr,idx){
 									// DESIGN: Dont include those first few junky fields from SP that point to FieldsAsHTML etc
 									if ( arrResults[0][colStr] && typeof arrResults[0][colStr] === 'object' && arrResults[0][colStr].__deferred ) {
-										if (DEBUG) console.log('FYI: Skipping "select all" column: '+colStr);
+										if (APP_OPTS.debug) console.log('FYI: Skipping "select all" column: '+colStr);
 									}
 									else {
 										objListCols[colStr] = { dataName:colStr };
@@ -1047,9 +1606,19 @@
 									var arrCol = [];
 									var colVal = "";
 
-									// B.3.1: Get value(s) for this key
+									// NOTE: Result Difference! Using `nometadata` will leave out empty lookups - whereas `verbose` will include: `Manager:{}` when "Manager/Title" is empty!
+									/* EX:
+										0: {Name: "Wally West"}
+										1: {Name: "Clark Kent", Manager: {Title: "Brent Ely"}}
+									*/
+									// DESIGN: But we should always include an empty object as users expect is (and so users wont get exceptions trying to do `result.Manager` and having it not be present!)
+/*									if ( col.dataName && col.dataName.indexOf('/') > -1 && !result[col.dataName.split('/')[0]] ) {
+										result[col.dataName.split('/')[0]] = null;
+									}
+*/
+									// B.4.1: Get value(s) for this key
 									// Handle LookupMulti columns
-									if ( col.dataName && col.dataName.indexOf('/') > -1 && result[col.dataName.split('/')[0]].results ) {
+									if ( col.dataName && col.dataName.indexOf('/') > -1 && result[col.dataName.split('/')[0]] && result[col.dataName.split('/')[0]].results ) {
 										// A:
 										// NOTE: `listCols` can have "Dept/Id" and "Dept/Title", but SP only returns *ONE* result
 										// ....: So, skip any subsequnt listCol once results have been captured
@@ -1059,6 +1628,7 @@
 										colVal = [];
 
 										// C: Add any results
+// TODO: we can get both .results and reg array as metadata is an option!!!
 										result[col.dataName.split('/')[0]].results.forEach(function(objResult,idx){
 											// EX: {__metadata:Object, Id:2, Title:"Human Resources"}
 											if ( objResult.__metadata ) delete objResult.__metadata;
@@ -1070,15 +1640,22 @@
 									else if ( col.dataName && col.dataName.indexOf('/') > -1 ) {
 										// A: Split lookup info object/field
 										arrCol = col.dataName.split('/');
-										// B: Remove extraneous `__metadata`
-										if ( result[arrCol[0]].__metadata ) delete result[arrCol[0]].__metadata;
-										// B: Same for `__deferred`.
+
+										// B: Remove extraneous metadata
+										// B-1: Remove extraneous `__metadata`
+										if ( result[arrCol[0]] && result[arrCol[0]].__metadata ) delete result[arrCol[0]].__metadata;
+										// B-2: Same for `__deferred`.
 										// NOTE: Empty Multi-Person returns `{__deferred:{uri:'http...'}}` (ugh!)
-										if ( result[arrCol[0]].__deferred ) delete result[arrCol[0]].__deferred;
+										if ( result[arrCol[0]] && result[arrCol[0]].__deferred ) delete result[arrCol[0]].__deferred;
+
 										// C: Capture value
-										// CASE 1: `dataName` was used - in this case return the actual field user asked for
-										// Detect use of names listCols by comparing key to dataName
-										if ( key != arrCol[0] && key != col.dataName ) colVal = result[arrCol[0]][arrCol[1]];
+										// CASE 1: `dataName` was used - in this case return the actual field user queried
+										// Detect use of named `listCols` by comparing key to dataName
+										if ( key != arrCol[0] && key != col.dataName ) {
+											// CASE: Result is array of ID's. Ex: Multi-Lookup `Departments_x0020_SupportedId`: [{Id:1},{Id:2}]
+											if ( result[arrCol[0]] && Array.isArray(result[arrCol[0]]) ) colVal = result[arrCol[0]];
+											else colVal = ( result[arrCol[0]] ? result[arrCol[0]][arrCol[1]] : null );
+										}
 										// CASE 2: Other - in this case return the complete object (Ex: { Title:'Manager' })
 										// IMPORTANT: This de facto returns all the *other* fields queried. Eg: 'Manager/Id' and 'Manager/Title' were in cols
 										// We want to return a *single* object with these 2 elements, so they can be derefereced using 'Manger.Title' etc.
@@ -1096,13 +1673,7 @@
 									}
 
 									// B.3.2: Set value for this key
-									// If dataType is known, then convert
-									if ( col.dataType == 'DateTime' ) {
-										objRow[key] = new Date(colVal);
-									}
-									else {
-										objRow[key] = ( APP_OPTS.cleanColHtml && col.listDataType == 'string' ? colVal.replace(/<div(.|\n)*?>/gi,'').replace(/<\/div>/gi,'') : colVal );
-									}
+									objRow[key] = ( APP_OPTS.cleanColHtml && col.listDataType == 'string' ? colVal.replace(/<div(.|\n)*?>/gi,'').replace(/<\/div>/gi,'') : colVal );
 
 									// B.3.3: Handle `getVersions`
 									// Results of an append-text query is an array of Note versions in desc order
@@ -1205,8 +1776,7 @@
 			});
 		}
 
-		// DEPRECATED:
-		// TODO-2.0
+		// TODO: DEPRECATED: REMOVE-IN-2.0:
 		_newList.getItems = _newList.items;
 
 		// CRUD ---------------------------------------------------------------------
@@ -1252,7 +1822,7 @@
 						url     : _urlBase +"/items",
 						data    : JSON.stringify(jsonData),
 						metadata: true,
-						headers : { "Accept":"application/json;odata=verbose", "X-RequestDigest":_requestDigest }
+						headers : { "X-RequestDigest":_requestDigest }
 					})
 					.then(function(arrData){
 						if ( arrData && arrData[0] ) {
@@ -1329,7 +1899,6 @@
 						metadata: true,
 						headers : {
 							"X-HTTP-Method"  : "MERGE",
-							"Accept"         : "application/json;odata=verbose",
 							"X-RequestDigest": _requestDigest,
 							"IF-MATCH"       : ( jsonData.__metadata.etag ? jsonData.__metadata.etag : "*" )
 						}
@@ -1395,7 +1964,6 @@
 						url     : _urlBase +"/items("+ intID +")",
 						metadata: true,
 						headers : {
-							"Accept"         : "application/json;odata=verbose",
 							"X-RequestDigest": _requestDigest,
 							"X-HTTP-Method"  : "MERGE",
 							"IF-MATCH"       : ( jsonData.__metadata.etag ? jsonData.__metadata.etag : "*" )
@@ -1442,10 +2010,7 @@
 					type    : "POST",
 					url     : _urlBase +"/items("+ intID +")/recycle()",
 					metadata: true,
-					headers : {
-						"Accept"         : "application/json;odata=verbose",
-						"X-RequestDigest": _requestDigest
-					}
+					headers : { "X-RequestDigest": _requestDigest }
 				})
 				.then(function(){
 					// SP returns the item guid for Recycle operations
@@ -1462,44 +2027,55 @@
 		return _newList;
 	};
 
-	// API: REST (Runs internal AJAX ops *and* provides direct/ad-hoc interface to users)
+	// API: REST (Runs internal AJAX ops **AND** provides direct/ad-hoc interface to users)
 	/**
 	* Execute an ad-hoc REST query to one of many endpoints
+	* @since 1.0
+	* @public
 	*
 	* @example - sprLib.rest({ url:'/sites/dev/_api/web/webs', metadata:true });
 	* @example - sprLib.rest({ url:'/sites/dev/_api/web/webs', queryCols:['ID','Title'] });
 	* @example
-	sprLib.rest({
-		url: '/sites/dev/_api/web/sitegroups',
-		type: ['GET' | 'POST'],
-		queryCols: {
-			title:       { dataName:'Title' },
-			loginName:   { dataName:'LoginName' },
-			editAllowed: { dataName:'AllowMembersEditMembership' }
-		},
-		queryFilter:  "AllowMembersEditMembership eq 1",
-		queryOrderby: "Title",
-		queryLimit:   10
-	})
-	.then(function(arrayResults){ console.table(arrayResults) });
-	*
-	* @since 1.0.0
+	* sprLib.rest({
+	* 	url: '/sites/dev/_api/web/sitegroups',
+	* 	type: ['GET' | 'POST'],
+	* 	queryCols: {
+	* 		title:       { dataName:'Title' },
+	* 		loginName:   { dataName:'LoginName' },
+	* 		editAllowed: { dataName:'AllowMembersEditMembership' }
+	* 	},
+	* 	queryFilter:  "AllowMembersEditMembership eq 1",
+	* 	queryOrderby: "Title",
+	* 	queryLimit:   10
+	* });
 	*/
-	// sprLib.rest({ url:"/sites/dev/_api/web/sitegroups" }).then(function(data){ console.table(data); }); (data.d.results)
-	// sprLib.rest({ url:"/_api/web/lists/getbytitle('Employees')" }).then(function(data){ console.table(data); }); (data.d)
-	//
-	// EX: https://siteurl.sharepoint.com/sites/dev/_api/web/lists/getbytitle('Employees')/
-	// EX: https://siteurl.sharepoint.com/sites/dev/_api/web/sitegroups
 	sprLib.rest = function rest(inOpt) {
 		return new Promise(function(resolve, reject) {
 			// STEP 1: Options setup
 			inOpt = inOpt || {};
-			inOpt.spArrData = [];
-			inOpt.cache    = inOpt.cache    || APP_OPTS.cache;
-			inOpt.digest   = (inOpt.requestDigest || (typeof document !== 'undefined' && document.getElementById('__REQUESTDIGEST') ? document.getElementById('__REQUESTDIGEST').value : null));
-			inOpt.metadata = (typeof inOpt.metadata !== 'undefined' && inOpt.metadata != null ? inOpt.metadata : APP_OPTS.metadata);
-			inOpt.type     = inOpt.restType || inOpt.type || "GET";
-			inOpt.url      = (inOpt.restUrl || inOpt.url || APP_OPTS.baseUrl).replace(/\"/g, "'");
+			inOpt.spArrData  = [];
+			inOpt.cache      = (typeof inOpt.cache === 'boolean' ? inOpt.cache : APP_OPTS.cache);
+			inOpt.digest     = (inOpt.requestDigest || (typeof document !== 'undefined' && document.getElementById('__REQUESTDIGEST') ? document.getElementById('__REQUESTDIGEST').value : null));
+			inOpt.queryLimit = inOpt.queryLimit || APP_OPTS.queryLimit || null;
+			inOpt.type       = inOpt.restType || inOpt.type || "GET";
+			inOpt.url        = (inOpt.restUrl || inOpt.url || APP_OPTS.baseUrl).replace(/\"/g, "'");
+			// Construct `headers`
+			// NOTE: (`odata=verbose` is no longer reqd)[https://www.microsoft.com/en-us/microsoft-365/blog/2014/08/13/json-light-support-rest-sharepoint-api-released/]
+			inOpt.headers = inOpt.headers || {};
+			if ( !inOpt.headers.Accept ) inOpt.headers.Accept = "application/json;odata=verbose"; // DEFAULT (otherwise odata style *OMITS* fields that have no value, which breaks v1.x `rest()` results!)
+			if ( inOpt.metadata == false ) inOpt.headers.Accept = "application/json;odata=nometadata";
+			else if ( inOpt.metadata || inOpt.type == 'POST' ) inOpt.headers.Accept = "application/json;odata=verbose";
+			// Add "form digest value" [MS' term] if one was provided
+			if ( inOpt.digest ) inOpt.headers["X-RequestDigest"] = inOpt.digest;
+			/* TODO Add suport for `Authorization` (MS Graph/Azure)
+			Authorization: "Bearer " + accessToken
+			if ( inOpt.digest ) inOpt.headers["Authorization"] = "Bearer " + accessToken;
+			*/
+
+			// CURRENT:
+			// TODO: Return *ALL* results (do all paging and concat results together)
+			// getAllItems
+			// https://github.com/gitbrent/SpRestLib/issues/44
 
 			// STEP 2: Setup vars
 			var arrExpands = [], strExpands = "";
@@ -1507,12 +2083,19 @@
 				url    : inOpt.url,
 				type   : inOpt.type,
 				cache  : inOpt.cache,
-				headers: inOpt.headers || { "Accept":"application/json;odata=verbose", "X-RequestDigest":inOpt.digest }
+				headers: inOpt.headers
 			};
 			// Add `data` if included
 			if ( inOpt.data ) objAjaxQuery.data = inOpt.data;
-			// Add default `context-type` for POST if none was specified
-			if ( objAjaxQuery.type == 'POST' && !objAjaxQuery.headers.contentType ) objAjaxQuery.headers['content-type'] = 'application/json;odata=verbose';
+			// Add headers for `POST` types if omitted by user
+			if ( objAjaxQuery.type == 'POST' ) {
+				// NOTE: (late 2018) MS says to use verbose for CRUD (https://docs.microsoft.com/en-us/sharepoint/dev/sp-add-ins/working-with-lists-and-list-items-with-rest)
+				// Add default `context-type` for POST if none was specified
+				if ( !objAjaxQuery.headers.contentType ) objAjaxQuery.headers['content-type'] = 'application/json;odata=verbose';
+				// POST's to SharePoint will be *REJECTED* without a digest
+				// Add the `__REQUESTDIGEST` page variable if we can, otherwise, the user HAS to provide one (Node users, Graph users, etc.)
+				if ( !objAjaxQuery.headers['X-RequestDigest'] ) objAjaxQuery.headers['X-RequestDigest'] = inOpt.digest;
+			}
 
 			// STEP 3: Construct Base URL: `url` can be presented in many different forms...
 			objAjaxQuery.url = (inOpt.url.toLowerCase().indexOf('http') == 0 || inOpt.url.indexOf('/') == 0 ? '' : APP_OPTS.baseUrl);
@@ -1565,13 +2148,14 @@
 					}
 				}
 
-				// NOTE: Only applies to GET [select] queries (POST with this param are obv. invalid!)
+				// NOTE: Only applies to GET [select] queries (POST with this params are invalid!)
 				if (
 					(inOpt.queryFilter || objAjaxQuery.url.toLowerCase().indexOf('$select') > -1)
 					&& inOpt.type == "GET"
 					&& inOpt.url.toLowerCase().indexOf('$top') == -1
 					&& inOpt.queryLimit
-				) {
+				)
+				{
 					objAjaxQuery.url += ( (objAjaxQuery.url.indexOf('?')>0?'&':'?') + '$top=' + inOpt.queryLimit );
 				}
 
@@ -1595,7 +2179,7 @@
 			Promise.resolve()
 			.then(function(){
 				return new Promise(function(resolve, reject) {
-					if ( APP_OPTS.isNodeEnabled ) {
+					if ( APP_OPTS.nodeEnabled ) {
 						if ( !https ) {
 							// Declare https on-demand so APP_OPTS applies (if we init `https` with the library Angular/React/etc will fail on load as users have not had a chance to select any options)
 							try { https = require("https"); } catch(ex){ console.error("Unable to load `https`"); throw 'LIB-MISSING-HTTPS'; }
@@ -1613,7 +2197,7 @@
 						};
 						var request = https.request(options, function(res){
 							var rawData = '';
-							res.setEncoding('utf8');
+							res.setEncoding( inOpt.headers && inOpt.headers.binaryStringResponseBody ? 'binary' : 'utf8' );
 							res.on('data', function(chunk){ rawData += chunk; });
 							res.on('end', function(){
 								// NOTE: SP errors come here, not `res.on(error)`, so check for errors!
@@ -1631,14 +2215,16 @@
 								else if ( rawData.indexOf('{"error"') > -1 && rawData.indexOf('{"code"') > -1 ) {
 									// EX: {"error":{"code":"-1, Microsoft.SharePoint.SPException","message":{"lang":"en-US","value":"The field or property 'ColDoesntExist' does not exist."}}}
 									// EX: {"error":{"code":"-1, Microsoft.SharePoint.Client.InvalidClientQueryException","message":{"lang":"en-US","value":"A node of type 'EndOfInput' was read from the JSON reader when trying to read the start of an entry. A 'StartObject' node was expected."}}}
-									reject( JSON.parse(rawData).error.message.value + "\n\nURL used: " + objAjaxQuery.url );
+									if (APP_OPTS.debug) console.error("REST ERROR!\n\n`objAjaxQuery.url`: " + objAjaxQuery.url);
+									reject( JSON.parse(rawData).error.message.value );
 								}
 								else {
 									resolve(rawData);
 								}
 							});
 							res.on('error', function(e){
-								reject( JSON.parse(rawData).error.message.value + "\n\nURL used: " + objAjaxQuery.url );
+								if (APP_OPTS.debug) console.error("REST ERROR!\n\n`objAjaxQuery.url`: " + objAjaxQuery.url);
+								reject( JSON.parse(rawData).error.message.value);
 							});
 						});
 						// POST: Data is sent to SP via `write`
@@ -1648,6 +2234,8 @@
 					else {
 						// A:
 						var request = new XMLHttpRequest();
+						if ( inOpt.headers && inOpt.headers.binaryStringResponseBody ) request.responseType = 'arraybuffer';
+
 						request.open(objAjaxQuery.type, objAjaxQuery.url, true);
 
 						// B:
@@ -1658,17 +2246,24 @@
 						// C:
 						request.onload = function() {
 							if ( request.status >= 200 && request.status < 400 ) {
-								// Try XML first as `owssvr` (versions) query returns a true XML document
-								resolve(request.responseXML || request.responseText);
+								if ( inOpt.headers && inOpt.headers.binaryStringResponseBody ) {
+									resolve(request.response); // ArrayBuffer
+								}
+								else {
+									// Try XML first as `owssvr` (versions) query returns a true XML document
+									resolve(request.responseXML || request.responseText);
+								}
 							}
 							else {
-								reject( parseErrorMessage(request) + "\n\nURL used: " + objAjaxQuery.url );
+								if (APP_OPTS.debug) console.error("REST ERROR!\n\n`objAjaxQuery.url`: " + objAjaxQuery.url);
+								reject(parseErrorMessage(request));
 							}
 						};
 
 						// D:
 						request.onerror = function() {
-							reject( parseErrorMessage(request) + "\n\nURL used: " + objAjaxQuery.url );
+							if (APP_OPTS.debug) console.error("REST ERROR!\n\n`objAjaxQuery.url`: " + objAjaxQuery.url);
+							reject( parseErrorMessage(request));
 						};
 
 						// E:
@@ -1680,176 +2275,222 @@
 				});
 			})
 			.then(function(data){
-				// A: Parse string to JSON if needed
-				data = ( typeof data === 'string' && data.indexOf('{') == 0 ? JSON.parse(data) : data );
-
-				// B: If result is a single object, make it an array for pasing below (Ex: '_api/site/Owner/Id')
-				var arrObjResult = ( data && data.d && !data.d.results && typeof data.d === 'object' && Object.keys(data.d).length > 0 ? [data.d] : [] );
-
-				// C: Iterate over results
-				// NOTE: Depending upon which REST endpoint used, SP can return results in various forms (!)
-				// EX..: data.d.results is an [] of {}: [ {Title:'Brent Ely', Email:'Brent.Ely@microsoft.com'}, {}, {} ]
-				// NOTE: Ensure results are an object because SP will return an entire HTML page as a result in some error cases!
-
-				if ( objAjaxQuery.url.toLowerCase().indexOf('owssvr.dll') > -1 && objAjaxQuery.url.toLowerCase().indexOf('includeversions=true') > -1 ) {
-					// IE11: When using jQuery AJAX for AppendText/Versions/getVersions, the `data` result must be parsed directly (no conversion) using `(data).find("z:row")`
-					inOpt.spArrData.push( data );
+				// Handle `binaryStringResponseBody` option (data is base64 string)
+				if ( inOpt.headers && inOpt.headers.binaryStringResponseBody ) {
+					resolve( data );
 				}
-				else if ( arrObjResult.length > 0 || (data && data.d && data.d.results && typeof data.d.results === 'object') ) {
-					(arrObjResult.length > 0 ? arrObjResult : data.d.results).forEach(function(result){
-						var objRow = {};
+				else {
+					var arrObjResult = [];
 
-						// A: Add select columns
-						if ( inOpt.queryCols ) {
-							// NOTE: `queryCols` can be either an object or an array
-							if ( Array.isArray(inOpt.queryCols) ) {
-								inOpt.queryCols.forEach(function(key){
-									objRow[key] = ( APP_OPTS.cleanColHtml && col.listDataType == 'string' ? colVal.replace(/<div(.|\n)*?>/gi,'').replace(/<\/div>/gi,'') : colVal );
-								});
-							}
-							else {
-								Object.keys(inOpt.queryCols).forEach(function(key){
-									var col = inOpt.queryCols[key];
-									var arrCol = [];
-									var colVal = "";
+					// A: Parse string to JSON if needed
+					data = ( typeof data === 'string' && data.indexOf('{') == 0 ? JSON.parse(data) : data );
 
-									// B.3.1: Get value(s) for this key
+					// B: If result is a single object, make it an array for pasing below (Ex: '_api/site/Owner/Id')
+					// NOTE: `odata=verbose` => `data.d.results` -- `odata=nometadata` => `data.value`
+					if ( data && data.d ) {
+						if ( data.d.results ) arrObjResult = data.d.results;
+						else arrObjResult = ( Array.isArray(data.d) ? data.d : [data.d] );
+					}
+					else if ( data && data.value ) {
+						arrObjResult = ( Array.isArray(data.value) ? data.value : [data.value] );
+					}
+					else if ( data && typeof data === 'object' ) {
+						// NOTE: odata/nometadata queries return the name of item queried
+						// E.g.: `_api/Web/CurrentUser?$select=Groups/Id,Groups/Title` returns: `{ data.Groups:[{},{}] }`
+						arrObjResult = data;
+					}
 
-									// Handle Lookups that return an array of 'results' (eg: `LookupMulti`)
-									if ( col.dataName && col.dataName.indexOf('/') > -1
-										&& result[col.dataName.split('/')[0]] && result[col.dataName.split('/')[0]].results )
-									{
-										// A:
-										// NOTE: `listCols` can have "Dept/Id" and "Dept/Title", but SP only returns *ONE* result with both vals
-										// ....: So, skip any subsequent listCol's once results have been captured
-										if ( objRow[key] ) return;
+					// C: Iterate over results
+					// NOTE: Depending upon which REST endpoint used, SP can return results in various forms (!)
+					// EX..: data.d.results is an [] of {}: [ {Title:'Brent Ely', Email:'Brent.Ely@microsoft.com'}, {}, {} ]
+					// NOTE: Ensure results are an object because SP will return an entire HTML page as a result in some error cases!
+					if ( objAjaxQuery.url.toLowerCase().indexOf('owssvr.dll') > -1 && objAjaxQuery.url.toLowerCase().indexOf('includeversions=true') > -1 ) {
+						// IE11: When using jQuery AJAX for AppendText/Versions/getVersions, the `data` result must be parsed directly (no conversion) using `(data).find("z:row")`
+						inOpt.spArrData.push( data );
+					}
+// TODO: is this change okay? (did qunit test pass?) then remove this
+//					else if ( arrObjResult.length > 0 || (data && data.d && data.d.results && typeof data.d.results === 'object') ) {
+					else if ( arrObjResult && Array.isArray(arrObjResult) || (data && data.d && data.d.results && Array.isArray(data.d.results)) ) {
+						(arrObjResult || data.d.results).forEach(function(result){
+							var objRow = {};
 
-										// B: Default for this column type is empty array as multi-lookup returns an array of `results`
-										colVal = [];
+							// A: Add select columns
+							if ( inOpt.queryCols ) {
+								// NOTE: `queryCols` can be either an object or an array
+								if ( Array.isArray(inOpt.queryCols) ) {
+									inOpt.queryCols.forEach(function(key){
+										objRow[key] = ( APP_OPTS.cleanColHtml && col.listDataType == 'string' ? colVal.replace(/<div(.|\n)*?>/gi,'').replace(/<\/div>/gi,'') : colVal );
+									});
+								}
+								else {
+									Object.keys(inOpt.queryCols).forEach(function(key){
+										var col = inOpt.queryCols[key];
+										var arrCol = [];
+										var colVal = "";
 
-										// C: Add any results
-										result[col.dataName.split('/')[0]].results.forEach(function(objResult,idx){
-											// EX: {__metadata:Object, Id:2, Title:"Human Resources"}
-											if ( objResult.__metadata ) delete objResult.__metadata;
-											// Capture any-and-all columns returned (aside from removal of above)
-											colVal.push( objResult );
-										});
-									}
-									// Handle Lookup/Person/Url/etc. Ex: 'Manager/Title'
-									else if ( col.dataName && col.dataName.indexOf('/') > -1 ) {
-										// NOTE: While most lookups are single-level ('Manager/Title') there can be deeper levels as well ('Users/Member/Id')
-										// NOTE: dataName will be comma-sep fields when colName is an object with fields. (Ex: "Member/Users/Id,Member/Users/Title")
-										// Loop over each field. Ex: 'Member/Id,Member/Title'->['Member/Id','Member/Title']
-										col.dataName.split(',').forEach(function(strField,idx){
-											// A: Split lookup name
-											var arrKeys = strField.split('/');
+										// B.3.1: Get value(s) for this key
 
-											// B: Remove extraneous `__metadata` and `__deferred` objects
-											if ( result[arrKeys[0]] && result[arrKeys[0]].__metadata ) delete result[arrKeys[0]].__metadata;
-											if ( result[arrKeys[0]] && result[arrKeys[0]].__deferred ) delete result[arrKeys[0]].__deferred;
+										// NOTE: Result Difference! Using `nometadata` will leave out empty lookups - whereas `verbose` will include: `Manager:{}` when "Manager/Title" is empty!
+										/* EX:
+											0: {Name: "Wally West"}
+											1: {Name: "Clark Kent", Manager: {Title: "Brent Ely"}}
+										*/
+										// DESIGN: But we should always include an empty object as users expect is (and so users wont get exceptions trying to do `result.Manager` and having it not be present!)
+										if ( col.dataName && col.dataName.indexOf('/') > -1 && !result[col.dataName.split('/')[0]] ) {
+											result[col.dataName.split('/')[0]] = null;
+										}
+										// Handle Lookups that return an array of 'results' (eg: `LookupMulti`)
+										else if ( col.dataName && col.dataName.indexOf('/') > -1
+											&& result[col.dataName.split('/')[0]] && result[col.dataName.split('/')[0]].results )
+										{
+											// A:
+											// NOTE: `listCols` can have "Dept/Id" and "Dept/Title", but SP only returns *ONE* result with both vals
+											// ....: So, skip any subsequent listCol's once results have been captured
+											if ( objRow[key] ) return;
 
-											// C: Some lookups return arrays. Ex: 'Member/Users/Id' result => { Member:{ Users:{ results:[] } } }
-											// HACK(ish): Avoid complex algorithm and only support up to 2-5 levels deep
-											var lastChild = null;
-											if ( arrKeys.length == 2 ) {
-												// C.1:
-												lastChild = result[arrKeys[0]];
-												if ( lastChild && typeof lastChild === 'object' && Object.keys(lastChild)[0] == 'results' ) {
-													result[arrKeys[0]] = lastChild.results;
-												}
-												// C.2: Capture value
-												// CASE 1: `dataName` was passed in by user: return the actual field user asked for.
-												// EXAMPLE: `Title: { dataName:'Member/Title' }` = return Title:Title (not a Member.Title object)
-												// NOTE: Detect use of names listCols by comparing key to dataName
-												if ( key != arrKeys[0] && key != col.dataName ) colVal = result[arrKeys[0]][arrKeys[1]];
-												// CASE 2: Other - in this case return the complete object (Ex: { Title:'Manager' })
-												// IMPORTANT: This de facto returns all the *other* fields queried. Eg: 'Manager/Id' and 'Manager/Title' were in cols
-												// We want to return a *single* object with these 2 elements, so they can be derefereced using 'Manger.Title' etc.
+											// B: Default for this column type is empty array as multi-lookup returns an array of `results`
+											colVal = [];
+
+											// C: Add any results
+											result[col.dataName.split('/')[0]].results.forEach(function(objResult){
+												// EX: {__metadata:Object, Id:2, Title:"Human Resources"}
+//												if ( objResult.__metadata ) delete objResult.__metadata;
 												// Capture any-and-all columns returned (aside from removal of above)
-												else colVal = result[arrKeys[0]];
-											}
-											else if ( arrKeys.length == 3 ) {
-												// C.1:
-												lastChild = result[arrKeys[0]][arrKeys[1]];
-												if ( lastChild && typeof lastChild === 'object' && Object.keys(lastChild)[0] == 'results' ) {
-													result[arrKeys[0]][arrKeys[1]] = lastChild.results;
-												}
-												// C.2: Capture value
-												colVal = ( key != arrKeys[0] && key != col.dataName ? result[arrKeys[0]][arrKeys[1]][arrKeys[2]] : result[arrKeys[0]] );
-											}
-											else if ( arrKeys.length == 4 ) {
-												// C.1:
-												lastChild = result[arrKeys[0]][arrKeys[1]][arrKeys[2]];
-												if ( lastChild && typeof lastChild === 'object' && Object.keys(lastChild)[0] == 'results' ) {
-													result[arrKeys[0]][arrKeys[1]][arrKeys[2]] = lastChild.results;
-												}
-												// C.2: Capture value
-												colVal = ( key != arrKeys[0] && key != col.dataName ? result[arrKeys[0]][arrKeys[1]][arrKeys[2]][arrKeys[3]] : result[arrKeys[0]] );
-											}
-											else if ( arrKeys.length > 4 ) {
-												console.log('This is madness!!');
-											}
-										});
+												colVal.push( objResult );
+											});
+										}
+										// Handle Lookup/Person/Url/etc. Ex: 'Manager/Title'
+										else if ( col.dataName && col.dataName.indexOf('/') > -1 ) {
+											// NOTE: While most lookups are single-level ('Manager/Title') there can be deeper levels as well ('Users/Member/Id')
+											// NOTE: dataName will be comma-sep fields when colName is an object with fields. (Ex: "Member/Users/Id,Member/Users/Title")
+											// Loop over each field. Ex: 'Member/Id,Member/Title'->['Member/Id','Member/Title']
+											col.dataName.split(',').forEach(function(strField,idx){
+												// A: Split lookup name
+												var arrKeys = strField.split('/');
 
-										// D: Value clean-up (things like empty multi-person fields may end up being `{}`)
-										if ( typeof colVal === 'object' && !Array.isArray(colVal) && Object.keys(colVal).length == 0 ) colVal = [];
-									}
-									else if ( col.dataName ) {
-										arrCol = col.dataName.split('/');
-										colVal = ( arrCol.length > 1 ? result[arrCol[0]][arrCol[1]] : result[arrCol[0]] );
-									}
+												// B: Remove extraneous `__metadata` and `__deferred` objects
+												if ( result[arrKeys[0]] && result[arrKeys[0]].__metadata ) delete result[arrKeys[0]].__metadata;
+												if ( result[arrKeys[0]] && result[arrKeys[0]].__deferred ) delete result[arrKeys[0]].__deferred;
 
-									// DESIGN: If `dataType` exists, then transform result
-									// TODO: vvv this is old right?
-									if ( col.dataType == 'DateTime' ) objRow[key] = new Date(colVal);
-									else objRow[key] = ( APP_OPTS.cleanColHtml && col.listDataType == 'string' ? colVal.replace(/<div(.|\n)*?>/gi,'').replace(/<\/div>/gi,'') : colVal );
-								});
+												// C: Some lookups return arrays. Ex: 'Member/Users/Id' result => { Member:{ Users:{ results:[] } } }
+												// HACK(ish): Avoid complex algorithm and only support up to 2-5 levels deep
+												var lastChild = null;
+												if ( arrKeys.length == 2 ) {
+													// C.1:
+													lastChild = result[arrKeys[0]];
+													if ( lastChild && typeof lastChild === 'object' && Object.keys(lastChild)[0] == 'results' ) {
+														result[arrKeys[0]] = lastChild.results;
+													}
+													// C.2: Capture value
+													// CASE 1: `dataName` was passed in by user: return the actual field user asked for.
+													// EXAMPLE: `Title: { dataName:'Member/Title' }` = return Title:Title (not a Member.Title object)
+													// NOTE: Detect use of names listCols by comparing key to dataName
+													if ( key != arrKeys[0] && key != col.dataName ) colVal = result[arrKeys[0]][arrKeys[1]];
+													// CASE 2: Other - in this case return the complete object (Ex: { Title:'Manager' })
+													// IMPORTANT: This de facto returns all the *other* fields queried. Eg: 'Manager/Id' and 'Manager/Title' were in cols
+													// We want to return a *single* object with these 2 elements, so they can be derefereced using 'Manger.Title' etc.
+													// Capture any-and-all columns returned (aside from removal of above)
+													else colVal = result[arrKeys[0]];
+												}
+												else if ( arrKeys.length == 3 ) {
+													// C.1:
+													lastChild = result[arrKeys[0]][arrKeys[1]];
+													if ( lastChild && typeof lastChild === 'object' && Object.keys(lastChild)[0] == 'results' ) {
+														result[arrKeys[0]][arrKeys[1]] = lastChild.results;
+													}
+													// C.2: Capture value
+													colVal = ( key != arrKeys[0] && key != col.dataName ? result[arrKeys[0]][arrKeys[1]][arrKeys[2]] : result[arrKeys[0]] );
+												}
+												else if ( arrKeys.length == 4 ) {
+													var finalResult = "";
+
+													// C.1: Parse value
+													// Handle results that are arrays (not just a singleton) - eg: `ListItemAllFields/RoleAssignments[{Member:...}]`
+													if ( Array.isArray(result[arrKeys[0]][arrKeys[1]]) ) {
+														finalResult = result[arrKeys[0]][arrKeys[1]];
+													}
+													else if ( result[arrKeys[0]] && result[arrKeys[0]][arrKeys[1]] && result[arrKeys[0]][arrKeys[1]][arrKeys[2]] ) {
+														finalResult = result[arrKeys[0]][arrKeys[1]][arrKeys[2]];
+													}
+													else if ( result[arrKeys[0]] && result[arrKeys[0]][arrKeys[1]] && result[arrKeys[0]][arrKeys[1]][arrKeys[2]] && result[arrKeys[0]][arrKeys[1]][arrKeys[2]][arrKeys[3]] ) {
+														finalResult = result[arrKeys[0]][arrKeys[1]][arrKeys[2]][arrKeys[3]];
+													}
+
+													// C.2: Capture value
+													colVal = ( key != arrKeys[0] && key != col.dataName ? finalResult : result[arrKeys[0]] );
+
+												}
+												else if ( arrKeys.length > 4 ) {
+													console.log('This is madness!!');
+												}
+											});
+
+											// D: Value clean-up (things like empty multi-person fields may end up being `{}`)
+											if ( typeof colVal === 'object' && !Array.isArray(colVal) && Object.keys(colVal).length == 0 ) colVal = [];
+										}
+										else if ( col.dataName ) {
+											arrCol = col.dataName.split('/');
+											colVal = ( arrCol.length > 1 ? result[arrCol[0]][arrCol[1]] : result[arrCol[0]] );
+										}
+
+										// Set value
+										objRow[key] = ( APP_OPTS.cleanColHtml && col.listDataType == 'string' ? colVal.replace(/<div(.|\n)*?>/gi,'').replace(/<\/div>/gi,'') : colVal );
+									});
+								}
 							}
-						}
-						else {
-							Object.keys(result).forEach(function(key){
-								var val = result[key];
-								objRow[key] = val;
-							});
-						}
-
-						// B: Remove metadata unless the option to return it is set
-						if ( objRow.__metadata && !inOpt.metadata ) delete objRow.__metadata;
-
-						// C: Support "next" functionality
-						if ( data.d.__next ) {
-							var objSkip = { prevId:'', maxItems:'' };
-							data.d.__next.split('&').forEach(function(str,idx){
-								if ( str.indexOf('p_ID%3d') > -1 ) {
-									objSkip.prevId = str.split('&')[0].split('%3d')[2];
+							else if ( result ) {
+								// [odata] Ex: `_api/SP.UserProfiles.PeopleManager/GetUserProfilePropertyFor(accountName=@v,propertyname='PersonalSpace')?@v=%27gitbrent%27`
+								// returns: `{ value:"/personal/admin_brent_onmicrosoft_com/" }`
+								// which entered block above as a simple string value in an array: `["/some/place"]`
+								if ( typeof result === 'string' ) objRow['value'] = result;
+								else if ( typeof result === 'object' && Object.keys(result).length > 0 ) {
+									Object.keys(result).forEach(function(key){
+										var val = ( result[key] || null );
+										objRow[key] = val;
+									});
 								}
-								else if ( str.indexOf('%24top=') > -1 ) {
-									objSkip.maxItems = str.substring(str.lastIndexOf('=')+1);
-								}
-							});
-							if ( objSkip.prevId && objSkip.maxItems ) objRow.__next = objSkip;
-						}
+							}
 
-						// D: Add this row
+							// B: Support "next" functionality
+							// IMPORTANT: the nextLink key is odd: it can ONLY br referenced via string below. Do not alter syntax.
+							if ( (data.d && data.d.__next) || data["odata.nextLink"] ) {
+								var objSkip = { prevId:'', maxItems:'' };
+								(data.d ? data.d.__next : data["odata.nextLink"]).split('&').forEach(function(str,idx){
+									if ( str.indexOf('p_ID%3d') > -1 ) {
+										objSkip.prevId = str.split('&')[0].split('%3d')[2];
+									}
+									else if ( str.indexOf('%24top=') > -1 ) {
+										objSkip.maxItems = str.substring(str.lastIndexOf('=')+1);
+									}
+								});
+								if ( objSkip.prevId && objSkip.maxItems ) objRow.__next = objSkip;
+							}
+
+							// C: Add this row
+							inOpt.spArrData.push( objRow );
+						});
+					}
+					// EX..: data.d or data is an [object]: { listTitle:'Game Systems', numberOfItems:25 }
+					else if ( (data && data.d ? data.d : (data ? data : false)) && typeof (data.d || data) === 'object' && Object.keys(data.d || data).length > 0 ) {
+						var objRow = {};
+						var objData = (data.d || data);
+
+						Object.keys(objData).forEach(function(key){
+							var result = objData[key];
+							objRow[key] = result;
+						});
+
 						inOpt.spArrData.push( objRow );
-					});
+					}
+					// EX..: odata/nometadata can produce a raw string (eg: UserProfile Properties)
+					else if ( data && data.value ) {
+						objRow[key] = data.value;
+						inOpt.spArrData.push( objRow );
+					}
+
+					// D:
+					resolve( inOpt.spArrData );
 				}
-				// EX..: data.d or data is an [object]: { listTitle:'Game Systems', numberOfItems:25 }
-				else if ( (data && data.d ? data.d : (data ? data : false)) && typeof (data.d || data) === 'object' && Object.keys(data.d || data).length > 0 ) {
-					var objRow = {};
-					var objData = (data.d || data);
-
-					Object.keys(objData).forEach(function(key){
-						var result = objData[key];
-						objRow[key] = result;
-					});
-
-					if ( objRow.__metadata && !inOpt.metadata ) delete objRow.__metadata;
-					inOpt.spArrData.push( objRow );
-				}
-
-				// D:
-				resolve( inOpt.spArrData );
 			})
 			.catch(function(strErr){
 				// ROBUST: Renew token when needed (use `gRetryCounter` to prevent race condition)
@@ -1857,14 +2498,14 @@
 				// var strErrCode = jqXHR.status.toString();
 				// var strSpeCode = JSON.parse(jqXHR.responseText).error['code'].split(',')[0];
 				// INFO: ( strErrCode == '403' && strSpeCode == '-2130575252' )
-				if ( !APP_OPTS.isNodeEnabled && typeof strErr == 'string' && strErr.indexOf('(403)') > -1 && gRetryCounter <= APP_OPTS.maxRetries ) {
+				if ( !APP_OPTS.nodeEnabled && typeof strErr == 'string' && strErr.indexOf('(403)') > -1 && gRetryCounter <= APP_OPTS.maxRetries ) {
 					Promise.resolve()
 					.then(function(){
 						return sprLib.renewSecurityToken();
 					})
 					.then(function(){
 						var digest = (document && document.getElementById('__REQUESTDIGEST') ? document.getElementById('__REQUESTDIGEST').value : null);
-						if (DEBUG) console.log('err-403: token renewed');
+						if (APP_OPTS.debug) console.log('err-403: token renewed');
 						// Some operations (ex: CRUD) will include the token value in header. It must be refreshed as well (or the new tolem is pointless!)
 						if ( inOpt.headers && inOpt.headers['X-RequestDigest'] ) inOpt.headers['X-RequestDigest'] = digest;
 						gRetryCounter++;
@@ -1881,14 +2522,464 @@
 
 	// API: SITE (or WEB)
 	/**
+	* SharePoint Site/Subsite methods
+	* @since 1.3.0
+	*
 	* NOTE: `site` and `web` may be used interchangably (`/_api/site` is the top-level Web site and all its subsites)
 	* `web` is a securable web resource (aka: a SP website)
-	* https://msdn.microsoft.com/library/microsoft.sharepoint.spsite "top-level Web site and all its subsites. Each SPSite object, or site collection, is represented within an SPSiteCollection object"
+	* @see: https://msdn.microsoft.com/library/microsoft.sharepoint.spsite "top-level Web site and all its subsites. Each SPSite object, or site collection, is represented within an SPSiteCollection object"
 	*/
 	sprLib.site = function site(inUrl) {
 		// Variables
 		var _newSite = {};
 		var _urlBase = (inUrl ? (inUrl+'/').replace(/\/+$/g,'/') : ''); // Guarantee that baseUrl will end with a forward slash
+
+		/**
+		* Group Manipulation: Add, Delete, etc.
+		*
+		* @see: https://msdn.microsoft.com/en-us/library/dn531432.aspx?f=255&MSPPError=-2147217396#bk_GroupCollection
+		* @see: https://msdn.microsoft.com/en-us/library/office/dn531432.aspx#bk_Group
+		* @since 1.10.0
+		*/
+		_newSite.group = function(inOpt) {
+			// METHODS: Group Properties
+
+			/**
+			* Get SP.Group properties
+			*
+			* @see: https://docs.microsoft.com/en-us/previous-versions/office/developer/sharepoint-rest-reference/dn531432%28v%3doffice.15%29#group-resource
+			* @since 1.10.0
+			* @example: `sprLib.site().group({ id:8 }).info()`
+			* @return {Promise} - return `Promise` containing info object
+			*/
+			_newSite.group.info = function() {
+				return new Promise(function(resolve, reject) {
+					// A: Options check
+					if ( inOpt && Object.keys(inOpt).length > 0 && !inOpt.hasOwnProperty('id') ) {
+						console.warn('Warning..: Check your options! Available `site().group()` options are: `id`');
+						console.warn('Result...: Invalid group option: `null` will be returned');
+						reject('MISSING-OPTION');
+						return;
+					}
+
+					// B: Query properties
+					sprLib.rest({
+						url: _urlBase+'_api/web/SiteGroups('+inOpt.id+')',
+						type: 'GET',
+						metadata: false
+					})
+					.then(function(arrResults){
+						/* RESULTS:
+						.-------------------------------------------------------------------------------------------------------------------------.
+						|           Prop Name            |                                       Prop Value                                       |
+						|--------------------------------|----------------------------------------------------------------------------------------|
+						| Id                             | 8                                                                                      |
+						| IsHiddenInUI                   | (null/undef)                                                                           |
+						| LoginName                      | Dev Site Members                                                                       |
+						| Title                          | Dev Site Members                                                                       |
+						| PrincipalType                  | 8                                                                                      |
+						| AllowMembersEditMembership     | true                                                                                   |
+						| AllowRequestToJoinLeave        | (null/undef)                                                                           |
+						| AutoAcceptRequestToJoinLeave   | (null/undef)                                                                           |
+						| Description                    | Use this group to grant people contribute permissions to the SharePoint site: Dev Site |
+						| OnlyAllowMembersViewMembership | (null/undef)                                                                           |
+						| OwnerTitle                     | Dev Site Owners                                                                        |
+						| RequestToJoinLeaveEmailSetting | (null/undef)                                                                           |
+						'-------------------------------------------------------------------------------------------------------------------------'
+						*/
+
+						// LAST:
+						resolve( arrResults && arrResults[0] ? arrResults[0] : {} );
+					})
+					.catch(function(strErr){
+						reject( strErr );
+					});
+				});
+			}
+
+			// METHODS: Create/Remove Group
+
+			/**
+			* Create an SP.Group [UserCollection]
+			*
+			* @see: https://msdn.microsoft.com/en-us/library/office/dn531432.aspx#bk_GroupCollectionRequestExamples
+			* @since 1.10.0
+			* @example: `sprLib.site().group().create({ Title:'DevTeam1' })`
+			* @example: `sprLib.site().group().create({ Title:'DevTeam1', Description:'Dev Team One' })`
+			* @returns: The new SP.Group object
+			*/
+			_newSite.group.create = function(inOptSub) {
+				return new Promise(function(resolve, reject) {
+					var objData = inOptSub || {};
+					objData.__metadata = {'type':'SP.Group'};
+
+					// A: Options check
+					if ( !objData || !objData.Title ) {
+						console.warn('`Title` is required. Usage: `site().group().create({ Title:"Dev Users" })`');
+						reject( 'MISSING-OPTION' );
+					}
+
+					// B: Create Group
+				 	// NOTE: https://social.technet.microsoft.com/Forums/lync/en-US/2dcf6e49-cff8-403b-b52e-04d240bef16d/set-group-owner-using-rest-api?forum=sharepointdevelopment
+					// ,,,,: Says we cannot set Owner during create - it's ignored no matter what form its provided, the REST API just does not support that function
+					sprLib.rest({
+						url: _urlBase+'_api/web/SiteGroups',
+						type: 'POST',
+						data: JSON.stringify(objData),
+						metadata: true
+					})
+					.then(function(arrResults){
+						/* SP Returns:
+							AllowMembersEditMembership: null
+							AllowRequestToJoinLeave: null
+							AutoAcceptRequestToJoinLeave: null
+							Description: null
+							Id: 19
+							IsHiddenInUI: null
+							LoginName: "Dev Users"
+							OnlyAllowMembersViewMembership: true
+							Owner: {__deferred:{..}}
+							OwnerTitle: "Brent Ely"
+							PrincipalType: 8
+							RequestToJoinLeaveEmailSetting: null
+							Title: "Dev Users"
+							Users: {__deferred:{..}}
+						*/
+
+						// DESIGN: Result is an SP.Group
+						resolve( arrResults && arrResults.length > 0 ? arrResults[0] : {} );
+					})
+					.catch(function(strErr){
+						reject( strErr );
+					});
+				});
+			}
+
+			/**
+			* Delete an SP.Group [UserCollection]
+			*
+			* @see: https://msdn.microsoft.com/en-us/library/dn531432.aspx#bk_UserCollectionRemoveById
+			* @since 1.10.0
+			* @example: `sprLib.site().group({ id:18 }).delete({ id:9 })`
+			* @returns: sprestlib user object `{ id:?, email:?, login:?, title:? }`
+			*/
+			_newSite.group.delete = function(inOptSub) {
+				return new Promise(function(resolve, reject) {
+					// A: Options check
+					if ( inOpt && Object.keys(inOpt).length > 0 && !inOpt.hasOwnProperty('id') ) {
+						console.warn('Warning..: Check your options! Available `site().group()` options are: `id`');
+						console.warn('Result...: Invalid group option: `null` will be returned');
+						reject('MISSING-OPTION');
+						return;
+					}
+
+					// B: Remove group
+					// NOTE: There is also a `RemoveByLoginName('Dev Team')` REST API method, but it's not utilized for simplicity (only `id` is passed to `group()`)
+					sprLib.rest({
+						url: _urlBase+'_api/web/sitegroups/removebyid('+inOpt.id+')',
+						type: 'POST',
+						metadata: true
+					})
+					.then(function(objGroup){
+						// SharePoint POST result: `{RemoveById:null}`
+
+						// DESIGN: Result is boolean
+						resolve( true );
+					})
+					.catch(function(strErr){
+						reject( strErr );
+					});
+				});
+			}
+
+			// METHODS: Modify Members
+
+			/**
+			* Add SP.User to SP.Group [UserCollection]
+			*
+			* @see: https://msdn.microsoft.com/en-us/library/office/dn531432.aspx#bk_UserCollectionRequestExamples
+			* @since 1.10.0
+			* @example: `sprLib.site().group({ id:18 }).addUser({ id:9 })`
+			* @returns: sprestlib user object `{ id:?, email:?, login:?, title:? }`
+			*/
+			_newSite.group.addUser = function(inOptSub) {
+				return new Promise(function(resolve, reject) {
+					// A: Options check
+					if ( inOpt && Object.keys(inOpt).length > 0 && !inOpt.hasOwnProperty('id') ) {
+						console.warn('Warning..: Check your options! Available `site().group()` options are: `id`');
+						console.warn('Result...: Invalid group option: `null` will be returned');
+						reject('MISSING-OPTION');
+						return;
+					}
+
+					// B: Check params (allow the same fields that can be passed to `sprLib.user()` in order to get LoginName)
+					if ( !inOptSub ) {
+						console.warn('Missing option. Usage: `site().group(99).add({ login:"i:0#.f|membership|brent@microsoft.com" })`');
+						reject( 'MISSING-OPTION' );
+						return;
+					}
+					else if ( inOptSub && Object.keys(inOptSub).length > 0
+						&& !inOptSub.hasOwnProperty('id') && !inOptSub.hasOwnProperty('email')
+						&& !inOptSub.hasOwnProperty('login') && !inOptSub.hasOwnProperty('title')
+					) {
+						console.warn('Warning: Unknown option(s) passed. Available `site().group().add()` options are: `id`,`email`,`login`,`title`');
+						reject( 'INVALID-OPTION' );
+						return;
+					}
+
+					// C: Add new user to group
+					// NOTE: Only `LoginName` is accepted ("[-2146232832] The parameter loginName cannot be empty or bigger than 251 characters.")
+					Promise.resolve()
+					.then(function(){
+						// Per MSDN, the only way to select props is using `AccountName`, so query if not provided
+						// Get LoginName when something was passed (as opposed to `null`), but not the LoginName
+						if ( inOptSub && !inOptSub.login ) return sprLib.user(inOptSub).info();
+					})
+					.then(function(objUser){
+						// A: Use LoginName if it was just queried
+						// NOTE: DO NOT encode! POSTed JSON is only accepted by SP unencoded
+						if ( objUser ) inOptSub.login = objUser.LoginName;
+
+						// B: Add user
+						return sprLib.rest({
+							url: _urlBase+'_api/web/SiteGroups('+inOpt.id+')/users',
+							type: 'POST',
+							data: "{ '__metadata':{'type':'SP.User'}, 'LoginName':'"+ inOptSub.login +"' }",
+							metadata: true
+						});
+					})
+					.then(function(arrResults){
+						var objUser = {};
+
+						if ( arrResults && arrResults[0] ) {
+							objUser.id    = arrResults[0].Id || -1;
+							objUser.email = arrResults[0].Email || '';
+							objUser.login = arrResults[0].LoginName || '';
+							objUser.title = arrResults[0].Title || '';
+						}
+
+						// DESIGN: Result is SpRestLib User object
+						resolve( objUser );
+					})
+					.catch(function(strErr){
+						reject( strErr );
+					});
+				});
+			}
+
+			/**
+			* Remove SP.User from SP.Group [UserCollection]
+			*
+			* @see: https://msdn.microsoft.com/en-us/library/dn531432.aspx#bk_UserCollectionRemoveById
+			* @since 1.10.0
+			* @example: `sprLib.site().group({ id:18 }).removeUser({ id:9 })`
+			* @example: `sprLib.site().group({ id:18 }).removeUser({ login:'brent@microsoft.com' })`
+			* @returns: sprestlib user object `{ id:?, email:?, login:?, title:? }`
+			*/
+			_newSite.group.removeUser = function(inOptSub) {
+				return new Promise(function(resolve, reject) {
+					// A: Options check
+					if ( inOpt && Object.keys(inOpt).length > 0 && !inOpt.hasOwnProperty('id') ) {
+						console.warn('Warning..: Check your options! Available `site().group()` options are: `id`');
+						console.warn('Result...: Invalid group option: `null` will be returned');
+						reject('MISSING-OPTION');
+						return;
+					}
+
+					// B: Check params (allow the same fields that can be passed to `sprLib.user()` in order to get LoginName)
+					if ( !inOptSub ) {
+						console.warn('Missing option. Usage: `site().group(99).remove({ id:99 })`');
+						reject( 'MISSING-OPTION' );
+						return;
+					}
+					else if ( inOptSub && Object.keys(inOptSub).length > 0
+						&& !inOptSub.hasOwnProperty('id') && !inOptSub.hasOwnProperty('email')
+						&& !inOptSub.hasOwnProperty('login') && !inOptSub.hasOwnProperty('title')
+					) {
+						console.warn('Warning: Unknown option(s) passed. Available `site().group().remove()` options are: `id`,`email`,`login`,`title`');
+						reject( 'INVALID-OPTION' );
+						return;
+					}
+
+					// C: Remove user
+					// NOTE: Calling remove endpoint on a non-existant or prev-removed user produces the same result
+					Promise.resolve()
+					.then(function(){
+						// Per MSDN, the only way to select props is using `AccountName`, so query if not provided
+						// Get LoginName when something was passed (as opposed to `null`), but not the LoginName
+						if ( inOptSub && !inOptSub.id && !inOptSub.login ) return sprLib.user(inOptSub).info();
+					})
+					.then(function(objUser){
+						// A: Use Id/LoginName if just queried
+						// NOTE: DO NOT encode! POSTed JSON is only accepted by SP unencoded
+						if ( objUser ) {
+							inOptSub.id    = objUser.Id;
+							inOptSub.login = encodeURIComponent(objUser.LoginName);
+						}
+
+						// B: Remove user
+						if ( inOptSub.id ) {
+							return sprLib.rest({
+								url: _urlBase+'_api/web/SiteGroups('+inOpt.id+')/users/removebyid('+inOptSub.id+')',
+								type: 'POST',
+								metadata: true
+							});
+						}
+						else if ( inOptSub.login ) {
+							// NOTE: Enocde "#" or SP will error
+							return sprLib.rest({
+								url: _urlBase+"_api/web/SiteGroups("+inOpt.id+")/users/removebyloginname(@v)?@v='"+ inOptSub.login.replace(/#/g,'%23') +"'",
+								type: 'POST',
+								metadata: true
+							});
+						}
+					})
+					.then(function(objUser){
+						// SharePoint POST result: `{RemoveById:null}`
+
+						// DESIGN: Result is boolean
+						resolve( true );
+					})
+					.catch(function(strErr){
+						reject( strErr );
+					});
+				});
+			}
+
+			// FUTURE FEATURES:
+			{
+				// FUTURE: group().owner({ login:'1#0f.login.id' })
+				/*
+				return sprLib.rest({
+					url: _urlBase+'_api/web/SiteGroups('+inOpt.id+')/owner',
+					type: 'POST',
+					//data: "{ '__metadata':{'type':'SP.User'}, 'LoginName':'"+ inOptSub.login +"' }",
+					data: "{ '__metadata':{'type':'SP.User'}, 'Id':'"+ "9" +"' }",
+					metadata: true
+				});
+				*/
+
+				// FUTURE: GET: group().prop('Description')
+				// FUTURE: SET: group().prop('Description', 'new description!')
+				/*
+				method: "POST",
+				body: "{ '__metadata':{ 'type': 'SP.Group' }, 'Description':'New description of the group' }",
+				headers: {
+					"content-type": "application/json; odata=verbose",
+					"X-HTTP-Method": "MERGE"
+				},
+				*/
+
+			}
+
+			return _newSite.group;
+		}
+
+		/**
+		* Get all Groups under the SiteCollection or the Groups under a given Subsite
+		*
+		* @example
+		* .----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------.
+		* | Id |             Description            |         Title          |    OwnerTitle     |  PrincipalType   | AllowMembersEditMembership |                     Users                                         |
+		* |----|------------------------------------|------------------------|-------------------|------------------|----------------------------|-------------------------------------------------------------------|
+		* |  8 | contribute permissions: Dev Site   | Dev Site Members       | Dev Site Owners   | SharePoint Group | true                       | []                                                                |
+		* |  6 | full control permissions: Dev Site | Dev Site Owners        | Dev Site Owners   | SharePoint Group | false                      | [{"Id":99,"LoginName":"brent@microsoft.com","Title":"Brent Ely"}] |
+		* |  7 | read permissions: Dev Site         | Dev Site Visitors      | Dev Site Owners   | SharePoint Group | false                      | []                                                                |
+		* .----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------.
+		*
+		* @return {Promise} - return `Promise` containing Groups
+		*/
+		_newSite.groups = function(inOpt) {
+			return new Promise(function(resolve, reject) {
+				var arrData = [];
+				var arrQuery = [];
+
+				// STEP 1: Options check
+				if ( inOpt && Object.keys(inOpt).length > 0 && !inOpt.hasOwnProperty('id') && !inOpt.hasOwnProperty('title') ) {
+					console.warn('Warning..: Check your options! Available `site().groups()` options are: `id`,`title`');
+					console.warn('Result...: Invalid filter option: All site groups will be returned');
+					// NOTE: Treat junk filter as null (return all Groups)
+					inOpt = null;
+				}
+
+				// TODO: Add all the keys SiteGroups/RoleAssignments (not just the few we specify - SP returns like 10)
+
+				// STEP 2: Query group(s)
+				// LOGIC: If `inUrl` exists, then just get the Groups from that site, otherwise, return SiteCollection Groups
+				if ( inUrl ) {
+					var strFilter = 'Member/PrincipalType eq 8'; // Default is all groups (type=8)
+					if ( inOpt && inOpt.id ) strFilter = "Member/Id eq "+inOpt.id;
+					else if ( inOpt && inOpt.title ) strFilter = "Member/Title eq '"+inOpt.title+"'";
+
+					// STEP 1: Get Groups
+					sprLib.rest({
+						url: _urlBase+'_api/web/RoleAssignments',
+						queryCols: [
+							'Member/Id','Member/Title','Member/Description','Member/OwnerTitle',
+							'Member/PrincipalType','Member/AllowMembersEditMembership',
+							'Member/Users/Id','Member/Users/LoginName','Member/Users/Title'
+						],
+						queryFilter: strFilter,
+						queryLimit: APP_OPTS.maxRows,
+						metadata: false
+					})
+					.then(function(arrGroups){
+						// TODO: in `// A: Filter internal/junk groups` below, we filter and not here
+
+						// A: Create/Populate array of Groups and Promises
+						arrGroups.forEach(function(grp,idx){
+							arrData.push({
+								Id: grp.Member.Id,
+								Title: grp.Member.Title,
+								Description: grp.Member.Description,
+								OwnerTitle: grp.Member.OwnerTitle,
+								PrincipalType: (ENUM_PRINCIPALTYPES[grp.Member.PrincipalType] || grp.Member.PrincipalType),
+								AllowMembersEditMembership: grp.Member.AllowMembersEditMembership,
+								Users: grp.Member.Users.map(function(user){ if (user.__metadata) delete user.__metadata; return user; })
+							});
+						});
+
+						// Resolve results (NOTE: empty array is the correct default result)
+						resolve( arrData || [] );
+					})
+					.catch(function(strErr){
+						reject( strErr );
+					});
+				}
+				else {
+					var strFilter = ''; // Default is empty filter
+					if ( inOpt && inOpt.id ) strFilter = "Id eq "+inOpt.id;
+					else if ( inOpt && inOpt.title ) strFilter = "Title eq '"+inOpt.title+"'";
+
+					sprLib.rest({
+						url: _urlBase+'_api/web/SiteGroups',
+						queryCols: [
+							'Id','Title','Description','OwnerTitle',
+							'PrincipalType','AllowMembersEditMembership',
+							'Users/Id','Users/LoginName','Users/Title'
+						],
+						queryFilter: strFilter,
+						queryLimit: APP_OPTS.maxRows,
+						metadata: false
+					})
+					.then(function(arrData){
+						// A: Filter internal/junk groups
+						if ( arrData && Array.isArray(arrData) ) {
+							arrData = arrData.filter(function(group){ return group.Title.indexOf('SharingLinks') == -1 });
+						}
+
+						// B: Decode PrincipalType
+						arrData.forEach(function(item,idx){ item.PrincipalType = ENUM_PRINCIPALTYPES[item.PrincipalType] || item.PrincipalType });
+
+						// C: Resolve results (NOTE: empty array is the correct default result)
+						resolve( arrData || [] );
+					})
+					.catch(function(strErr){
+						reject( strErr );
+					});
+				}
+			});
+		}
 
 		/**
 		* Get Site information:
@@ -1913,12 +3004,14 @@
 							'AssociatedOwnerGroup/OwnerTitle','AssociatedMemberGroup/OwnerTitle','AssociatedVisitorGroup/OwnerTitle',
 							'AssociatedOwnerGroup/Title',     'AssociatedMemberGroup/Title',     'AssociatedVisitorGroup/Title'
 						],
-						cache: false
+						cache: false,
+						metadata: false
 					}),
 					sprLib.rest({
 						url: _urlBase+'_api/site',
 						queryCols: ['Owner/Email','Owner/LoginName','Owner/Title','Owner/IsSiteAdmin'],
-						cache: false
+						cache: false,
+						metadata: false
 					})
 				])
 				.then(function(arrAllArrays){
@@ -1959,7 +3052,8 @@
 					url: _urlBase+'_api/web/lists',
 					queryCols: [
 						'Id','Title','Description','ItemCount','BaseType','BaseTemplate','Hidden','ImageUrl','ParentWebUrl','RootFolder/ServerRelativeUrl'
-					]
+					],
+					metadata: false
 				})
 				.then(function(arrData){
 					// A: Modify some values
@@ -1973,36 +3067,6 @@
 					});
 
 					// B: Resolve results (NOTE: empty array is the correct default result)
-					resolve( arrData || [] );
-				})
-				.catch(function(strErr){
-					reject( strErr );
-				});
-			});
-		}
-
-		/**
-		* Get Subsites
-		*
-		* @return {Promise} - return `Promise` containing Subsites
-		*/
-		_newSite.subsites = function() {
-			return new Promise(function(resolve, reject) {
-				sprLib.rest({
-					url: _urlBase+'_api/web/webs',
-					queryCols: {
-						Id:				{ dataName:'Id'						,dispName:'Id'					},
-						Name:			{ dataName:'Title'					,dispName:'Subsite Name'		},
-						UrlAbs:			{ dataName:'Url'					,dispName:'Absolute URL'		},
-						UrlRel:			{ dataName:'ServerRelativeUrl'      ,dispName:'Relative URL'		},
-						Created:		{ dataName:'Created'				,dispName:'Date Created'		},
-						Modified:		{ dataName:'LastItemModifiedDate'	,dispName:'Date Last Modified'	},
-						Language:		{ dataName:'Language'				,dispName:'Language'			},
-						SiteLogoUrl:	{ dataName:'SiteLogoUrl'			,dispName:'Site Logo URL'		}
-					}
-				})
-				.then(function(arrData){
-					// A: Resolve results (NOTE: empty array is the correct default result)
 					resolve( arrData || [] );
 				})
 				.catch(function(strErr){
@@ -2031,7 +3095,8 @@
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
 					url: _urlBase+'_api/web/roleAssignments',
-					queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden']
+					queryCols: ['PrincipalId','Member/PrincipalType','Member/Title','RoleDefinitionBindings/Name','RoleDefinitionBindings/Hidden'],
+					metadata: false
 				})
 				.then(function(arrData){
 					// STEP 1: Transform: Results s/b 2 keys with props inside each
@@ -2071,7 +3136,8 @@
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
 					url: _urlBase+'_api/web/roleDefinitions',
-					queryCols: ['Id','Name','Description','RoleTypeKind','Hidden']
+					queryCols: ['Id','Name','Description','RoleTypeKind','Hidden'],
+					metadata: false
 				})
 				.then(function(arrData){
 					// A: Resolve results (NOTE: empty array is the correct default result)
@@ -2084,106 +3150,33 @@
 		}
 
 		/**
-		* Get all Groups under the SiteCollection or the Groups under a given Subsite
+		* Get Subsites
 		*
-		* @example
-		* //.----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------.
-		* //| Id |             Description            |         Title          |    OwnerTitle     |  PrincipalType   | AllowMembersEditMembership |                     Users                                         |
-		* //|----|------------------------------------|------------------------|-------------------|------------------|----------------------------|-------------------------------------------------------------------|
-		* //|  8 | contribute permissions: Dev Site   | Dev Site Members       | Dev Site Owners   | SharePoint Group | true                       | []                                                                |
-		* //|  6 | full control permissions: Dev Site | Dev Site Owners        | Dev Site Owners   | SharePoint Group | false                      | [{"Id":99,"LoginName":"brent@microsoft.com","Title":"Brent Ely"}] |
-		* //|  7 | read permissions: Dev Site         | Dev Site Visitors      | Dev Site Owners   | SharePoint Group | false                      | []                                                                |
-		* //.----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------.
-		*
-		* @return {Promise} - return `Promise` containing Groups
+		* @return {Promise} - return `Promise` containing Subsites
 		*/
-		_newSite.groups = function(inOpt) {
+		_newSite.subsites = function() {
 			return new Promise(function(resolve, reject) {
-				var arrData = [];
-				var arrQuery = [];
-
-				// STEP 1: Options check
-				if ( inOpt && Object.keys(inOpt).length > 0 && !inOpt.hasOwnProperty('id') && !inOpt.hasOwnProperty('title') ) {
-					console.warn('Warning..: Check your options! Available `site().groups()` options are: `id`,`title`');
-					console.warn('Result...: Invalid filter option: All site groups will be returned');
-					// NOTE: Treat junk filter as null (return all Groups)
-					inOpt = null;
-				}
-
-				// TODO: Add all the keys SiteGroups/RoleAssignments (not just the few we specify - SP returns like 10)
-
-				// STEP 2: Query group(s)
-				// LOGIC: If `inUrl` exists, then just get the Groups from that site, otherwise, return SiteCollection Groups
-				if ( inUrl ) {
-					var strFilter = 'Member/PrincipalType eq 8'; // Default is all groups (type=8)
-					if ( inOpt && inOpt.id ) strFilter = "Member/Id eq "+inOpt.id;
-					else if ( inOpt && inOpt.title ) strFilter = "Member/Title eq '"+inOpt.title+"'";
-
-					// STEP 1: Get Groups
-					sprLib.rest({
-						url: _urlBase+'_api/web/RoleAssignments',
-						queryCols: [
-							'Member/Id','Member/Title','Member/Description','Member/OwnerTitle',
-							'Member/PrincipalType','Member/AllowMembersEditMembership',
-							'Member/Users/Id','Member/Users/LoginName','Member/Users/Title'
-						],
-						queryFilter: strFilter,
-						queryLimit: APP_OPTS.maxRows
-					})
-					.then(function(arrGroups){
-						// TODO: in `// A: Filter internal/junk groups` below, we filter and not here
-
-						// A: Create/Populate array of Groups and Promises
-						arrGroups.forEach(function(grp,idx){
-							arrData.push({
-								Id: grp.Member.Id,
-								Title: grp.Member.Title,
-								Description: grp.Member.Description,
-								OwnerTitle: grp.Member.OwnerTitle,
-								PrincipalType: (ENUM_PRINCIPALTYPES[grp.Member.PrincipalType] || grp.Member.PrincipalType),
-								AllowMembersEditMembership: grp.Member.AllowMembersEditMembership,
-								Users: grp.Member.Users.map(function(user){ if (user.__metadata) delete user.__metadata; return user; })
-							});
-						});
-
-						// Resolve results (NOTE: empty array is the correct default result)
-						resolve( arrData || [] );
-					})
-					.catch(function(strErr){
-						reject( strErr );
-					});
-				}
-				else {
-					var strFilter = ''; // Default is empty filter
-					if ( inOpt && inOpt.id ) strFilter = "Id eq "+inOpt.id;
-					else if ( inOpt && inOpt.title ) strFilter = "Title eq '"+inOpt.title+"'";
-
-					sprLib.rest({
-						url: _urlBase+'_api/web/SiteGroups',
-						queryCols: [
-							'Id','Title','Description','OwnerTitle',
-							'PrincipalType','AllowMembersEditMembership',
-							'Users/Id','Users/LoginName','Users/Title'
-						],
-						queryFilter: strFilter,
-						queryLimit: APP_OPTS.maxRows
-					})
-					.then(function(arrData){
-						// A: Filter internal/junk groups
-						if ( arrData && Array.isArray(arrData) ) {
-							arrData = arrData.filter(function(group){ return group.Title.indexOf('SharingLinks') == -1 });
-						}
-
-						// B: Decode PrincipalType
-						arrData.forEach(function(item,idx){ item.PrincipalType = ENUM_PRINCIPALTYPES[item.PrincipalType] || item.PrincipalType });
-
-						// C: Resolve results (NOTE: empty array is the correct default result)
-						resolve( arrData || [] );
-					})
-					.catch(function(strErr){
-						reject( strErr );
-					});
-				}
+				sprLib.rest({
+					url: _urlBase+'_api/web/webs',
+					queryCols: {
+						Id:				{ dataName:'Id'						,dispName:'Id'					},
+						Name:			{ dataName:'Title'					,dispName:'Subsite Name'		},
+						UrlAbs:			{ dataName:'Url'					,dispName:'Absolute URL'		},
+						UrlRel:			{ dataName:'ServerRelativeUrl'      ,dispName:'Relative URL'		},
+						Created:		{ dataName:'Created'				,dispName:'Date Created'		},
+						Modified:		{ dataName:'LastItemModifiedDate'	,dispName:'Date Last Modified'	},
+						Language:		{ dataName:'Language'				,dispName:'Language'			},
+						SiteLogoUrl:	{ dataName:'SiteLogoUrl'			,dispName:'Site Logo URL'		}
+					},
+					metadata: false
+				})
+				.then(function(arrData){
+					// A: Resolve results (NOTE: empty array is the correct default result)
+					resolve( arrData || [] );
+				})
+				.catch(function(strErr){
+					reject( strErr );
+				});
 			});
 		}
 
@@ -2221,13 +3214,15 @@
 							url: _urlBase+'_api/web/RoleAssignments',
 							queryCols: ['Member/Id','Member/Email','Member/LoginName','Member/Title','Member/IsSiteAdmin'],
 							queryFilter: 'Member/PrincipalType eq 1',
-							queryLimit: APP_OPTS.maxRows
+							queryLimit: APP_OPTS.maxRows,
+							metadata: false
 						}),
 						sprLib.rest({
 							url: _urlBase+'_api/web/RoleAssignments',
 							queryCols: ['Member/Id','Member/Title','Member/Users/Id','Member/Users/Email','Member/Users/LoginName','Member/Users/Title','Member/Users/IsSiteAdmin'],
 							queryFilter: 'Member/PrincipalType eq 8',
-							queryLimit: APP_OPTS.maxRows
+							queryLimit: APP_OPTS.maxRows,
+							metadata: false
 						})
 					])
 					.then(function(arrAllArrays){
@@ -2293,7 +3288,8 @@
 						url: _urlBase+'_api/web/SiteUsers',
 						queryCols: ['Id','Email','LoginName','Title','IsSiteAdmin','Groups/Id','Groups/Title'],
 						queryFilter: 'PrincipalType eq 1',
-						queryLimit: APP_OPTS.maxRows
+						queryLimit: APP_OPTS.maxRows,
+						metadata: false
 					})
 					.then(function(arrData){
 						var arrSiteUsers = [];
@@ -2320,45 +3316,56 @@
 			});
 		}
 
-		// TODO: FUTURE: contentTypes & Features
-		/*
-			_newSite.contentTypes = function() {
-				// ContentTypes: https://contoso.sharepoint.com/sites/dev/_api/web/ContentTypes
-			}
-			_newSite.features = function() {
-				// Features: https://contoso.sharepoint.com/sites/dev/_api/site/Features
-			}
-		*/
+		// FUTURE FEATURES:
+		{
+			// FUTURE: contentTypes & Features
+			/*
+				_newSite.contentTypes = function() {
+					// ContentTypes: https://contoso.sharepoint.com/sites/dev/_api/web/ContentTypes
+				}
+				_newSite.features = function() {
+					// Features: https://contoso.sharepoint.com/sites/dev/_api/site/Features
+				}
+			*/
 
-		// TODO: FUTURE: Usage
-		/*
-			FYI:
-			/sites/dev/_api/site/Usage
-			/sites/dev/sandbox/_api/site/Usage
-			^^^ same result (Storage is whole site collection - not individual webs!)
+			// FUTURE: Usage
+			/*
+				FYI:
+				/sites/dev/_api/site/Usage
+				/sites/dev/sandbox/_api/site/Usage
+				^^^ same result (Storage is whole site collection - not individual webs!)
 
-			sprLib.rest({
-				url: '_api/site/usage',
-				queryCols: ['Usage/Storage','Usage/StoragePercentageUsed']
-			})
-			<d:Usage xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml" m:type="SP.UsageInfo">
+				sprLib.rest({
+					url: '_api/site/usage',
+					queryCols: ['Usage/Storage','Usage/StoragePercentageUsed']
+				})
+				<d:Usage xmlns:d="http://schemas.microsoft.com/ado/2007/08/dataservices" xmlns:m="http://schemas.microsoft.com/ado/2007/08/dataservices/metadata" xmlns:georss="http://www.georss.org/georss" xmlns:gml="http://www.opengis.net/gml" m:type="SP.UsageInfo">
 				<d:Bandwidth m:type="Edm.Int64">0</d:Bandwidth>
 				<d:DiscussionStorage m:type="Edm.Int64">0</d:DiscussionStorage>
 				<d:Hits m:type="Edm.Int64">0</d:Hits>
 				<d:Storage m:type="Edm.Int64">512050423</d:Storage>
 				<d:StoragePercentageUsed m:type="Edm.Double">1.8628285870363472E-05</d:StoragePercentageUsed>
 				<d:Visits m:type="Edm.Int64">0</d:Visits>
-			</d:Usage>
-		*/
+				</d:Usage>
+			*/
+		}
 
 		// LAST: Return this List to enable chaining
 		return _newSite;
 	}
 
 	// API: USER (Current or Query User by Props)
+	/**
+	* SharePoint User/Group methods
+	* @since 0.11.0
+	*
+	* @param `inOpt` (object) - user query options
+	* @example - sprlib.user().info()
+	*/
 	sprLib.user = function user(inOpt) {
 		var _newUser = {};
 		var _urlBase = "_api/Web";
+		var _urlProf = "_api";
 		var _urlRest = "/CurrentUser?"; // Default to current user if no options were provided
 
 		// STEP 1: Options setup/check
@@ -2366,12 +3373,11 @@
 		// Check for existance of any keys to filter out `{}` that is sometimes passed - dont warn about those, treat as empty
 		if ( inOpt && Object.keys(inOpt).length > 0
 			&& !inOpt.hasOwnProperty('id') && !inOpt.hasOwnProperty('email')
-			&& !inOpt.hasOwnProperty('login') && !inOpt.hasOwnProperty('title')
-		) {
-			console.warn('Warning: Check your options! Available `user()` options are: `id`,`email`,`login`,`title`');
-			console.warn('Result: Current user is being returned');
-			// NOTE: Treat junk params as null (Clear options to remove junk entries)
-			inOpt = {};
+			&& !inOpt.hasOwnProperty('login') && !inOpt.hasOwnProperty('title') && !inOpt.hasOwnProperty('baseUrl') )
+		{
+			console.warn('Warning: Unknown option(s) passed. Available `user()` options are: `baseUrl`,`id`,`email`,`login`,`title`');
+			console.warn('Result: The current user is being returned');
+			inOpt = {}; // NOTE: Treat junk params as null (Clear options to remove junk entries)
 		}
 		// B: Ensure an `inOpt` value going forward
 		inOpt = inOpt || {};
@@ -2379,6 +3385,7 @@
 		// STEP 2: Set `baseUrl`
 		if ( inOpt.hasOwnProperty('baseUrl') ) {
 			_urlBase = ( inOpt.baseUrl.toString().replace(/\/+$/,'') + '/_api/Web');
+			_urlProf = ( inOpt.baseUrl.toString().replace(/\/+$/,'') + '/_api');
 		}
 
 		// STEP 3: Build query URL based on whether its current user (no parameter) or a passed in object
@@ -2391,7 +3398,7 @@
 		else if ( inOpt && inOpt.login ) _urlRest = "/siteusers?$filter=LoginName%20eq%20%27"+ inOpt.login.replace(/#/g,'%23') +"%27&";
 		else if ( inOpt && inOpt.title ) _urlRest = "/siteusers?$filter=Title%20eq%20%27"+     inOpt.title +"%27&";
 
-		// STEP 4: Complete URL
+		// STEP 4: Build complete URL
 		_urlRest = _urlBase + _urlRest;
 
 		/**
@@ -2404,14 +3411,15 @@
 		* sprLib.user({ id:1234 }).info().then( function(objUser){ console.table(objUser) } );
 		*
 		* @return {Promise} - return `Promise` containing User info object
+		* @since 0.11.0
 		*/
 		_newUser.info = function() {
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
 					url    : _urlRest + "$select=Id,Title,Email,LoginName,IsSiteAdmin,PrincipalType",
-					headers: { "Accept":"application/json;odata=verbose" },
 					type   : "GET",
-					cache  : false
+					cache  : false,
+					metadata: false
 				})
 				.then(function(arrData){
 					var objUser = {};
@@ -2439,21 +3447,22 @@
 		* sprLib.user(1234).groups().then( function(objUser){ console.table(objUser) } );
 		*
 		* @return {Promise} - Return `Promise` containing Group(s) info (`Id`, `Title`)
+		* @since 0.11.0
 		*/
 		_newUser.groups = function() {
 			return new Promise(function(resolve, reject) {
 				sprLib.rest({
 					url    : _urlRest + "$select=Groups/Id,Groups/Title,Groups/Description,Groups/LoginName,Groups/OwnerTitle&$expand=Groups",
-					headers: { "Accept":"application/json;odata=verbose" },
 					type   : "GET",
-					cache  : false
+					cache  : false,
+					metadata: false
 				})
 				.then(function(arrData){
 					var arrGroups = [];
 
 					// A: Gather groups
-					( arrData && arrData[0] && arrData[0].Groups && arrData[0].Groups.results ? arrData[0].Groups.results : [] )
-					.forEach(function(group,idx){
+					( arrData && arrData[0] && arrData[0].Groups && arrData[0].Groups ? arrData[0].Groups : [] )
+					.forEach(function(group){
 						arrGroups.push({
 							Id: group.Id,
 							Title: group.Title,
@@ -2475,6 +3484,7 @@
 		/**
 		* Get User Profile properties (SP.UserProfiles.PersonProperties)
 		*
+		* @since 1.6.0
 		* @example sprLib.user().profile()
 		* @example sprLib.user({ id:9 }).profile()
 		* @example sprLib.user().profile('AccountName')
@@ -2495,6 +3505,8 @@
 		*     queryCols: ['PictureUrl','AccountName']
 		* })
 		*/
+		// TODO-2.0: BREAKING CHANGE: refactor to return itself and allow queries to profile-props, eg: `sprLib.user().profile().props('PictureUrl')`
+		// OR perhaps: profile('PictureUrl'), as it mimics what we already do for user() - default to all, or use key(s) provided
 		_newUser.profile = function(arrProfileKeys) {
 			return new Promise(function(resolve, reject) {
 				var arrQueryKeys = (Array.isArray(arrProfileKeys) ? arrProfileKeys : (typeof arrProfileKeys === 'string' ? [arrProfileKeys] : null));
@@ -2513,19 +3525,36 @@
 
 					// B: Fetch props
 					// NOTE: Just fetch all props (no filter below) as `GetMyProperties?select=SID` returns nothing, but it's present when querying all props
-					// NOTE: Both of these queries returns an object of [PersonProperties](https://msdn.microsoft.com/en-us/library/office/dn790354.aspx#bk_PersonProperties)
+					// NOTE: Both of these queries return an object of [PersonProperties](https://msdn.microsoft.com/en-us/library/office/dn790354.aspx#bk_PersonProperties)
 					if ( !userAcctName ) {
 						return sprLib.rest({
-							url: "_api/SP.UserProfiles.PeopleManager/GetMyProperties",
+							url: _urlProf+"/SP.UserProfiles.PeopleManager/GetMyProperties",
+							metadata: false
+						});
+					}
+					else if ( Array.isArray(arrQueryKeys) && arrQueryKeys.length == 1 ) {
+						// NOTE: PERF: Return only a fraction of UserProfiles when we can
+						// @see: https://msdn.microsoft.com/en-us/library/office/dn790354.aspx#bk_PeopleManagerGetUserProfilePropertyFor
+						// "To get all user profile properties, call the GetPropertiesFor method and then get the user profile properties from the UserProfileProperties property of the returned PersonProperties object."
+						// Use: `getuserprofilepropertyfor()` to retrieve a single property (very efficient: only queries this one prop, does not return mass amount of data like 'DirectReports', etc.)
+						// NOTE: "The GetUserProfilePropertiesFor method is not implemented in the REST API" - meaning we can onyl two things via REST: Return all, or return 1 property...
+						return sprLib.rest({
+							url: _urlProf+"/SP.UserProfiles.PeopleManager/GetUserProfilePropertyFor(accountName=@v,propertyname='"+ arrQueryKeys[0] +"')?@v='"+userAcctName+"'",
+							metadata: false
+						});
+					}
+					else if ( Array.isArray(arrQueryKeys) && arrQueryKeys.length > 1 ) {
+						// PERF: Only query "UserProfileProperties" (this avoids pulling back `DirectReports` etc. which are data-heavy)
+						return sprLib.rest({
+							url: _urlProf+"/SP.UserProfiles.PeopleManager/GetPropertiesFor(accountName=@v)/UserProfileProperties?@v='"+userAcctName+"'",
 							metadata: false
 						});
 					}
 					else {
 						// NOTE: Encode "#" to "%23" or query fails!
-						// NOTE: Per MSDN we can only query with `accountName`
+						// NOTE: Per MSDN: `GetPropertiesFor` only accepts "accountName" as a query field
 						return sprLib.rest({
-							url: "_api/SP.UserProfiles.PeopleManager/GetPropertiesFor(accountName=@v)?@v='"+userAcctName+"'",
-							type: 'POST',
+							url: _urlProf+"/SP.UserProfiles.PeopleManager/GetPropertiesFor(accountName=@v)?@v='"+userAcctName+"'",
 							metadata: false
 						});
 					}
@@ -2533,22 +3562,36 @@
 				.then(function(arrProfileProps){
 					var objProfile = {};
 
-					// A: Cases where this fails (bad user, maybe no license?) REST returns {'GetPropertiesFor':null}
-					if ( arrProfileProps && arrProfileProps[0] && arrProfileProps[0].hasOwnProperty('GetPropertiesFor') ) resolve( {} );
+					// A: Handle lack of results
+					if ( !arrProfileProps || !Array.isArray(arrProfileProps) || arrProfileProps.length == 0 ) resolve( {} );
 
 					// B: Capture all cols or just the ones specified
-					if ( arrProfileProps[0] && Array.isArray(arrQueryKeys) && arrQueryKeys.length > 0 ) {
+					if ( arrQueryKeys && arrQueryKeys.length == 1 && arrProfileProps[0].value ) {
+						// When querying a single propertyName (as of Jan-2019, only 1 can be queried individually - more than 1, we pull all and filter in code)
+						// Desc: `sprLib.rest()` doesnt have a "$select" or queryCols, so it returns:
+						// Result: [nometa]: {value:"whatever"}
+						objProfile[arrQueryKeys[0]] = ( arrProfileProps[0].value || '`'+arrQueryKeys[0]+'` property does not exist in SP.UserProfiles.PeopleManager.UserProfileProperties' );
+					}
+					else if ( arrQueryKeys && arrQueryKeys.length > 1 ) {
 						arrQueryKeys.forEach(function(key){
-							objProfile[key] = arrProfileProps[0][key] || 'ERROR: No such property exists in SP.UserProfiles.PeopleManager';
+							var objProp = arrProfileProps.filter(function(prop){ return prop.Key == key })[0];
+
+							if ( objProp && objProp.Value ) {
+								objProfile[key] = objProp.Value;
+							}
+							else {
+								objProfile[key] = '`'+key+'` property does not exist in SP.UserProfiles.PeopleManager or SP.UserProfiles.PeopleManager.UserProfileProperties';
+							}
 						});
 					}
 					else if ( arrProfileProps[0] ) {
 						objProfile = arrProfileProps[0];
 					}
 					else {
-						if (DEBUG) console.log('??? `arrProfileProps[0]` does not exist!');
+						if (APP_OPTS.debug) console.log('??? `arrProfileProps[0]` does not exist!');
 					}
 
+					/* FYI: `verbose` mode requires this clean-up, `nometadata` returns elevated/clean array as lookup results!
 					// C: Clean data
 					Object.keys(objProfile).forEach(function(key){
 						// B.A: Remove `__metadata` and `ValueType` from each property
@@ -2561,9 +3604,11 @@
 						// B.C: Elevate `results` to the prop value. EX: `Peers:{__metadata:{...}, results:[]}`` -> `Peers:[]`
 						if ( objProfile[key] && objProfile[key].results ) { objProfile[key] = objProfile[key].results; }
 					});
+					*/
 
-					// D: Reduce `UserProfileProperties` array of objects to prop name/value
-					// EX: [{"__metadata":{"type":"SP.KeyValue"},"Key":"UserProfile_GUID","Value":"712d9300-5d61-456b-95d1-123d29e5e0bc","ValueType":"Edm.String"},...]
+					// D: Reduce `UserProfileProperties` array of object key/val pairs, to simply {`$Key`:`$Value`} - no dereferecing needed
+					// EX: [verbose/metadata]: [{"__metadata":{"type":"SP.KeyValue"},"Key":"UserProfile_GUID","Value":"712d9300-5d61-456b-95d1-123d29e5e0bc","ValueType":"Edm.String"},...]
+					// EX: [odata/nometadata]: `{ Key:"FirstName", Value:"Brent", ValueType:"Edm.String" }`
 					if ( objProfile.UserProfileProperties ) {
 						var objProfileProps = {};
 						objProfile.UserProfileProperties.forEach(function(obj){ objProfileProps[obj.Key] = obj.Value; });
@@ -2581,19 +3626,6 @@
 
 		// LAST: Return this User to enable chaining
 		return _newUser;
-	}
-
-	// API: UTILITY: Token
-	sprLib.renewSecurityToken = function renewSecurityToken() {
-		return doRenewDigestToken();
-	}
-
-	// API: NODEJS: Setup
-	sprLib.nodeConfig = function nodeConfig(inOpt) {
-		inOpt = (inOpt && typeof inOpt === 'object' ? inOpt : {});
-		APP_OPTS.isNodeEnabled = (typeof inOpt.nodeEnabled !== 'undefined' ? inOpt.nodeEnabled : true);
-		APP_OPTS.nodeCookie = inOpt.cookie || '';
-		APP_OPTS.nodeServer = inOpt.server || '';
 	}
 })();
 

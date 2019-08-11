@@ -1,27 +1,73 @@
-// Type definitions for sprestlib 1.8.0
+// Type definitions for sprestlib 1.10.0
 // Project: https://gitbrent.github.io/SpRestLib/
 // Definitions by: Brent Ely <https://github.com/gitbrent/>
 //                 Jandos <https://github.com/Wireliner>
+//                 Kelvin Bell <https://github.com/kelvinbell>
 // Definitions: https://github.com/DefinitelyTyped/DefinitelyTyped
 // TypeScript Version: 2.3
 
 declare namespace sprLib {
   const version: string;
 
+  interface optionsOptions {
+    baseUrl?: string;
+    nodeCookie?: string;
+    nodeEnabled?: boolean;
+    nodeServer?: string;
+    queryLimit?: number;
+  }
+  interface IOptions {
+    baseUrl: string;
+    nodeCookie?: string;
+    nodeEnabled?: boolean;
+    nodeServer?: string;
+    queryLimit: number;
+  }
+  function options(): IOptions;
+  function options(options: optionsOptions): IOptions;
+
   function baseUrl(): string;
   function baseUrl(baseUrl: string): void;
 
-  function nodeConfig(options: Object): void;
+  function nodeConfig(options: object): void;
 
   function renewSecurityToken(): void;
 
-  class file {
-    constructor(fileName: string);
-
-    info(): Promise<Object>;
-    perms(): Promise<Object[]>;
-    version(): Promise<Object>;
+  interface FileCheckInOptions {
+    comment?: string;
+    type?: 'major' | 'minor' | 'overwrite';
   }
+  interface FileInfoOptions {
+    version?: number;
+  }
+  interface IFile {
+    checkin(options: FileCheckInOptions): Promise<boolean>;
+    checkout(): Promise<boolean>;
+    delete(): Promise<boolean>;
+    get(): Promise<Blob>;
+    info(options: FileInfoOptions): Promise<object>;
+    perms(): Promise<object[]>;
+    recycle(): Promise<boolean>;
+  }
+  function file(fileName: string): IFile;
+
+  interface FolderUploadOptions {
+    name: string;
+    data: object;
+    requestDigest?: string;
+    overwrite?: boolean;
+  }
+  interface IFolder {
+    add(folderName: string): Promise<object>;
+    delete(): Promise<boolean>;
+    files(): Promise<object[]>;
+    folders(): Promise<object[]>;
+    info(): Promise<object>;
+    perms(): Promise<object[]>;
+    recycle(): Promise<boolean>;
+    upload(options: FolderUploadOptions): Promise<object>;
+  }
+  function folder(folderName: string): IFolder;
 
   /**
    * SharePoint List/Library API.
@@ -30,67 +76,76 @@ declare namespace sprLib {
    * @since 1.0
    */
   interface ListOptions {
-    name: string;
+    name?: string;
+    guid?: string;
     baseUrl?: string;
     requestDigest?: string;
   }
   interface ListItemsOptions {
-    listCols: Array<string> | Object;
+    listCols?: Array<string> | object;
     metadata?: boolean;
     queryFilter?: string;
     queryLimit?: number;
-    queryNext?: Object;
+    queryNext?: object;
     queryOrderBy?: string;
   }
-  class list {
-    constructor(listName: string);
-    constructor(listGuid: string);
-    constructor(options: ListOptions);
+  interface IList {
+    cols(): Promise<object[]>;
+    info(): Promise<object>;
+    perms(): Promise<object[]>;
 
-    cols(): Promise<Object[]>;
-    info(): Promise<Object>;
-    perms(): Promise<Object[]>;
-
-    items(options: ListItemsOptions): Promise<Object[]>;
-    create(options: Object): Promise<Object[]>;
-    update(options: Object): Promise<Object[]>;
-    delete(options: Object): Promise<number>;
-    recycle(options: Object): Promise<number>;
+    items(options: ListItemsOptions): Promise<object[]>;
+    create(options: object): Promise<object[]>;
+    update(options: object): Promise<object[]>;
+    delete(options: object): Promise<number>;
+    recycle(options: object): Promise<number>;
   }
+  function list(listName: string): IList;
+  function list(listGuid: string): IList;
+  function list(options: ListOptions): IList;
 
   interface RestOptions {
     url: string;
     type?: 'GET' | 'POST' | 'DELETE';
-    data?: Object;
+    data?: object;
     headers?: any;
     requestDigest?: string;
   }
-  function rest(options: RestOptions): Promise<Object[]>;
+  function rest(options: RestOptions): Promise<object[]>;
 
-  class site {
-    constructor(siteUrl?: string);
-
-    info(): Promise<Object>;
-    lists(): Promise<Object[]>;
-    subsites(): Promise<Object[]>;
-    perms(): Promise<Object[]>;
-    roles(): Promise<Object[]>;
-    groups(): Promise<Object[]>;
-    users(): Promise<Object[]>;
+  interface SiteGroupOptions {
+    id: number;
   }
+  interface IGroup {
+    info(): Promise<object>;
+    create(): Promise<object>;
+    delete(): Promise<boolean>;
+	addUser(): Promise<object>;
+    removeUser(): Promise<boolean>;
+  }
+  interface ISite {
+    group(options: SiteGroupOptions): IGroup;
+    groups(): Promise<object[]>;
+	info(): Promise<object>;
+	lists(): Promise<object[]>;
+	perms(): Promise<object[]>;
+	roles(): Promise<object[]>;
+	subsites(): Promise<object[]>;
+    users(): Promise<object[]>;
+  }
+  function site(siteUrl?: string): ISite;
 
   interface UserOptions {
+    baseUrl?: string;
     id?: string;
     email?: string;
     login?: string;
     title?: string;
   }
-
-  class user {
-    constructor(options?: UserOptions);
-
-    info(): Promise<Object>;
-    groups(): Promise<Object[]>;
-    profile(arrProfileKeys: Object): Object;
+  interface IUser {
+    info(): Promise<object>;
+    groups(): Promise<object[]>;
+    profile(arrProfileKeys?: object): Promise<object>;
   }
+  function user(options?: UserOptions): IUser;
 }
